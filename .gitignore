@@ -1,0 +1,63 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+build/
+dist/
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+
+# Dependencies
+node_modules/
+vendor/
+target/
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+*.out
+
+# IDE project files
+*.project
+*.cproject
+*.settings/
+
+# STM32 build
+Debug/
+Release/
+*.ld
+*.d
+
+# Go
+go.sum
+go.mod.tmp
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
