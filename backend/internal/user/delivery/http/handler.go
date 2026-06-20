@@ -3,152 +3,161 @@ package http
 import (
 	"context"
 	"strconv"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/common/utils"
 
 	userSvc "github.com/dangerous-drive-guard/backend/internal/user/service"
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
 
-var userService *userSvc.UserService
+type CreateUserRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	RealName string `json:"real_name" binding:"required"`
+	Phone    string `json:"phone"`
+	Email    string `json:"email"`
+	Role     string `json:"role" binding:"required"`
+	OrgID    int64  `json:"org_id"`
+}
 
-func initService() {
-	if userService == nil {
-		userService = userSvc.NewUserService()
+type ResetPasswordRequest struct {
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+type UserHandler struct {
+	userService *userSvc.UserService
+}
+
+func NewUserHandler(svc *userSvc.UserService) *UserHandler {
+	return &UserHandler{userService: svc}
+}
+
+func (h *UserHandler) RegisterRoutes(r *app.RouterGroup, authMiddleware app.HandlerFunc) {
+	users := r.Group("/users", authMiddleware)
+	{
+		users.GET("", h.ListUsers)
+		users.GET("/:id", h.GetUser)
+		users.POST("", h.CreateUser)
+		users.PUT("/:id", h.UpdateUser)
+		users.DELETE("/:id", h.DeleteUser)
+		users.POST("/:id/reset-password", h.ResetPassword)
 	}
 }
 
-func GetProfile(ctx context.Context, c *app.RequestContext) {
-	initService()
-	userID, _ := c.Get("user_id")
-	user, err := userService.GetUser(ctx, toInt64(userID))
+func (h *UserHandler) ListUsers(c context.Context, ctx *app.RequestContext) {
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
+	orgID, _ := strconv.ParseInt(ctx.DefaultQuery("org_id", "0"), 10, 64)
+	role := ctx.Query("role")
+	keyword := ctx.Query("keyword")
+
+	users, total, err := h.userService.ListUsers(c, orgID, role, keyword, page, pageSize)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(ctx, err.Error())
 		return
 	}
-	response.Success(c, user)
+
+	response.Page(ctx, users, total, page, pageSize)
 }
 
-func UpdateProfile(ctx context.Context, c *app.RequestContext) {
-	initService()
-	userID, _ := c.Get("user_id")
+func (h *UserHandler) GetUser(c context.Context, ctx *app.RequestContext) {
+	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid user id")
+		return
+	}
+
+	user, err := h.userService.GetUser(c, id)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, user)
+}
+
+func (h *UserHandler) CreateUser(c context.Context, ctx *app.RequestContext) {
+	var req CreateUserRequest
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
+	}
+
+	user, err := h.userService.CreateUser(c, &userSvc.UserCreateRequest{
+		Username: req.Username,
+		Password: req.Password,
+		RealName: req.RealName,
+		Phone:    req.Phone,
+		Email:    req.Email,
+		Role:     userSvc.ToUserRole(req.Role),
+		OrgID:    req.OrgID,
+	})
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, user)
+}
+
+func (h *UserHandler) UpdateUser(c context.Context, ctx *app.RequestContext) {
+	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid user id")
+		return
+	}
+
 	var req map[string]interface{}
-	if err := c.BindAndValidate(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, err.Error())
 		return
 	}
-	req["id"] = toInt64(userID)
-	err := userService.UpdateUser(ctx, req)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Success(c, map[string]interface{}{"updated": true})
-}
 
-func GetByID(ctx context.Context, c *app.RequestContext) {
-	initService()
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "invalid user id")
-		return
-	}
-	user, err := userService.GetUser(ctx, id)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Success(c, user)
-}
-
-func List(ctx context.Context, c *app.RequestContext) {
-	initService()
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	orgID, _ := strconv.ParseInt(c.DefaultQuery("org_id", "0"), 10, 64)
-	role := c.Query("role")
-	keyword := c.Query("keyword")
-	users, total, err := userService.ListUsers(ctx, orgID, role, keyword, page, pageSize)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Page(c, users, total, page, pageSize)
-}
-
-func Create(ctx context.Context, c *app.RequestContext) {
-	initService()
-	var req userSvc.UserCreateRequest
-	if err := c.BindAndValidate(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-	user, err := userService.CreateUser(ctx, &req)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Success(c, user)
-}
-
-func Update(ctx context.Context, c *app.RequestContext) {
-	initService()
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		response.BadRequest(c, "invalid user id")
-		return
-	}
-	var req map[string]interface{}
-	if err := c.BindAndValidate(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
 	req["id"] = id
-	err = userService.UpdateUser(ctx, req)
+	err = h.userService.UpdateUser(c, req)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(ctx, err.Error())
 		return
 	}
-	response.Success(c, map[string]interface{}{"updated": true})
+
+	response.Success(ctx, utils.H{"updated": true})
 }
 
-func Delete(ctx context.Context, c *app.RequestContext) {
-	initService()
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+func (h *UserHandler) DeleteUser(c context.Context, ctx *app.RequestContext) {
+	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
 	if err != nil {
-		response.BadRequest(c, "invalid user id")
+		response.BadRequest(ctx, "invalid user id")
 		return
 	}
-	err = userService.DeleteUser(ctx, id)
+
+	err = h.userService.DeleteUser(c, id)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(ctx, err.Error())
 		return
 	}
-	response.Success(c, map[string]interface{}{"deleted": true})
+
+	response.Success(ctx, utils.H{"deleted": true})
 }
 
-func toInt64(v interface{}) int64 {
-	switch x := v.(type) {
-	case int:
-		return int64(x)
-	case int32:
-		return int64(x)
-	case int64:
-		return x
-	case float64:
-		return int64(x)
-	default:
-		return 0
+func (h *UserHandler) ResetPassword(c context.Context, ctx *app.RequestContext) {
+	id, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid user id")
+		return
 	}
-}
 
-func toString(v interface{}) string {
-	if v == nil {
-		return ""
+	var req ResetPasswordRequest
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
 	}
-	if s, ok := v.(string); ok {
-		return s
+
+	err = h.userService.ResetPassword(c, id, req.NewPassword)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
 	}
-	return ""
+
+	response.Success(ctx, utils.H{"reset": true})
 }

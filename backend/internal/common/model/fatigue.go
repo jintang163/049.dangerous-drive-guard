@@ -74,24 +74,27 @@ type FatigueDetectResponse struct {
 }
 
 type FatigueDetectionRecord struct {
-	ID                  int64         `json:"id"`
-	VehicleID           int64         `json:"vehicle_id"`
-	DriverID            int64         `json:"driver_id"`
-	WaybillID           int64         `json:"waybill_id"`
-	FrameImageURL       string        `json:"frame_image_url"`
-	VideoClipURL        string        `json:"video_clip_url"`
-	Metrics             FatigueMetrics `json:"metrics"`
-	FatigueScore        float64       `json:"fatigue_score"`
-	FatigueLevel        FatigueLevel  `json:"fatigue_level"`
-	IsAlarmTriggered    bool          `json:"is_alarm_triggered"`
-	AlarmType           string        `json:"alarm_type"`
-	DetectionTime       time.Time     `json:"detection_time"`
-	Latitude            float64       `json:"latitude"`
-	Longitude           float64       `json:"longitude"`
-	VehicleSpeed        float64       `json:"vehicle_speed"`
-	EdgeComputed        bool          `json:"edge_computed"`
-	NetworkStatus       string        `json:"network_status"`
-	CreatedAt           time.Time     `json:"created_at"`
+	BaseModel
+	VehicleID           int64          `gorm:"index;not null" json:"vehicle_id"`
+	DriverID            int64          `gorm:"index;not null" json:"driver_id"`
+	WaybillID           int64          `gorm:"index" json:"waybill_id"`
+	FrameImageURL       string         `gorm:"type:varchar(256)" json:"frame_image_url"`
+	VideoClipURL        string         `gorm:"type:varchar(256)" json:"video_clip_url"`
+	Metrics             FatigueMetrics `gorm:"type:json" json:"metrics"`
+	FatigueScore        float64        `gorm:"type:decimal(5,2)" json:"fatigue_score"`
+	FatigueLevel        FatigueLevel   `gorm:"type:varchar(20)" json:"fatigue_level"`
+	IsAlarmTriggered    bool           `gorm:"default:false" json:"is_alarm_triggered"`
+	AlarmType           string         `gorm:"type:varchar(64)" json:"alarm_type"`
+	DetectionTime       time.Time      `gorm:"index;not null" json:"detection_time"`
+	Latitude            float64        `gorm:"type:decimal(10,7)" json:"latitude"`
+	Longitude           float64        `gorm:"type:decimal(10,7)" json:"longitude"`
+	VehicleSpeed        float64        `gorm:"type:decimal(5,2)" json:"vehicle_speed"`
+	EdgeComputed        bool           `gorm:"default:false" json:"edge_computed"`
+	NetworkStatus       string         `gorm:"type:varchar(20)" json:"network_status"`
+}
+
+func (FatigueDetectionRecord) TableName() string {
+	return "fatigue_detection_records"
 }
 
 type AlarmLevel int
@@ -113,84 +116,94 @@ const (
 )
 
 type FatigueAlarm struct {
-	ID                      int64       `json:"id"`
-	AlarmNo                 string      `json:"alarm_no"`
-	VehicleID               int64       `json:"vehicle_id"`
-	DriverID                int64       `json:"driver_id"`
-	WaybillID               int64       `json:"waybill_id"`
-	DetectionRecordID       int64       `json:"detection_record_id"`
-	AlarmType               string      `json:"alarm_type"`
-	AlarmLevel              AlarmLevel  `json:"alarm_level"`
-	FatigueScore            float64     `json:"fatigue_score"`
-	ContinuousFatigueMinutes int         `json:"continuous_fatigue_minutes"`
-	SnapImageURL            string      `json:"snap_image_url"`
-	VideoClipURL            string      `json:"video_clip_url"`
+	BaseModel
+	AlarmNo                 string      `gorm:"type:varchar(64);uniqueIndex;not null" json:"alarm_no"`
+	VehicleID               int64       `gorm:"index;not null" json:"vehicle_id"`
+	DriverID                int64       `gorm:"index;not null" json:"driver_id"`
+	WaybillID               int64       `gorm:"index" json:"waybill_id"`
+	DetectionRecordID       int64       `gorm:"index" json:"detection_record_id"`
+	AlarmType               string      `gorm:"type:varchar(64)" json:"alarm_type"`
+	AlarmLevel              AlarmLevel  `gorm:"index;not null" json:"alarm_level"`
+	FatigueScore            float64     `gorm:"type:decimal(5,2)" json:"fatigue_score"`
+	ContinuousFatigueMinutes int         `gorm:"default:0" json:"continuous_fatigue_minutes"`
+	SnapImageURL            string      `gorm:"type:varchar(256)" json:"snap_image_url"`
+	VideoClipURL            string      `gorm:"type:varchar(256)" json:"video_clip_url"`
 	VideoStartTime          *time.Time  `json:"video_start_time"`
 	VideoEndTime            *time.Time  `json:"video_end_time"`
-	Latitude                float64     `json:"latitude"`
-	Longitude               float64     `json:"longitude"`
-	LocationAddress         string      `json:"location_address"`
-	VehicleSpeed            float64     `json:"vehicle_speed"`
-	Status                  AlarmStatus `json:"status"`
-	NotifyDriverResult      string      `json:"notify_driver_result"`
-	DispatcherID            int64       `json:"dispatcher_id"`
+	Latitude                float64     `gorm:"type:decimal(10,7)" json:"latitude"`
+	Longitude               float64     `gorm:"type:decimal(10,7)" json:"longitude"`
+	LocationAddress         string      `gorm:"type:varchar(256)" json:"location_address"`
+	VehicleSpeed            float64     `gorm:"type:decimal(5,2)" json:"vehicle_speed"`
+	Status                  AlarmStatus `gorm:"type:varchar(20);index;not null" json:"status"`
+	NotifyDriverResult      string      `gorm:"type:varchar(256)" json:"notify_driver_result"`
+	DispatcherID            int64       `gorm:"index" json:"dispatcher_id"`
 	HandledAt               *time.Time  `json:"handled_at"`
-	HandleNote              string      `json:"handle_note"`
-	HandleType              string      `json:"handle_type"`
-	VehicleInformed         bool        `json:"vehicle_informed"`
-	Escalated               bool        `json:"escalated"`
-	CreatedAt               time.Time   `json:"created_at"`
-	UpdatedAt               time.Time   `json:"updated_at"`
-	VehiclePlate            string      `json:"vehicle_plate,omitempty"`
-	DriverName              string      `json:"driver_name,omitempty"`
+	HandleNote              string      `gorm:"type:text" json:"handle_note"`
+	HandleType              string      `gorm:"type:varchar(64)" json:"handle_type"`
+	VehicleInformed         bool        `gorm:"default:false" json:"vehicle_informed"`
+	Escalated               bool        `gorm:"default:false" json:"escalated"`
+	VehiclePlate            string      `gorm:"-" json:"vehicle_plate,omitempty"`
+	DriverName              string      `gorm:"-" json:"driver_name,omitempty"`
+}
+
+func (FatigueAlarm) TableName() string {
+	return "fatigue_alarms"
 }
 
 type DrivingScore struct {
-	ID                         int64   `json:"id"`
-	DriverID                   int64   `json:"driver_id"`
-	WaybillID                  int64   `json:"waybill_id"`
-	VehicleID                  int64   `json:"vehicle_id"`
-	TotalScore                 float64 `json:"total_score"`
-	ScoreLevel                 string  `json:"score_level"`
-	FatigueDeduction           float64 `json:"fatigue_deduction"`
-	OverspeedCount             int     `json:"overspeed_count"`
-	OverspeedDeduction         float64 `json:"overspeed_deduction"`
-	SuddenBrakeCount           int     `json:"sudden_brake_count"`
-	SuddenBrakeDeduction       float64 `json:"sudden_brake_deduction"`
-	SuddenAccelCount           int     `json:"sudden_accel_count"`
-	SuddenAccelDeduction       float64 `json:"sudden_accel_deduction"`
-	SharpTurnCount             int     `json:"sharp_turn_count"`
-	SharpTurnDeduction         float64 `json:"sharp_turn_deduction"`
-	LaneDeviationCount         int     `json:"lane_deviation_count"`
-	LaneDeviationDeduction     float64 `json:"lane_deviation_deduction"`
-	PhoneUsageCount            int     `json:"phone_usage_count"`
-	PhoneUsageDeduction        float64 `json:"phone_usage_deduction"`
-	SmokingCount               int     `json:"smoking_count"`
-	SmokingDeduction           float64 `json:"smoking_deduction"`
-	SeatbeltViolationCount     int     `json:"seatbelt_violation_count"`
-	SeatbeltViolationDeduction float64 `json:"seatbelt_violation_deduction"`
-	RouteDeviationCount        int     `json:"route_deviation_count"`
-	RouteDeviationDeduction    float64 `json:"route_deviation_deduction"`
-	FatigueAlarmCount          int     `json:"fatigue_alarm_count"`
-	TotalDistance              float64 `json:"total_distance"`
-	DrivingDuration            int     `json:"driving_duration"`
-	NightDrivingDuration       int     `json:"night_driving_duration"`
+	BaseModel
+	DriverID                   int64   `gorm:"index;not null" json:"driver_id"`
+	WaybillID                  int64   `gorm:"index" json:"waybill_id"`
+	VehicleID                  int64   `gorm:"index" json:"vehicle_id"`
+	TripDate                   string  `gorm:"type:date;index" json:"trip_date"`
+	TotalScore                 float64 `gorm:"type:decimal(5,2);not null" json:"total_score"`
+	ScoreLevel                 string  `gorm:"type:varchar(20)" json:"score_level"`
+	FatigueDeduction           float64 `gorm:"type:decimal(5,2);default:0" json:"fatigue_deduction"`
+	OverspeedCount             int     `gorm:"default:0" json:"overspeed_count"`
+	OverspeedDeduction         float64 `gorm:"type:decimal(5,2);default:0" json:"overspeed_deduction"`
+	SuddenBrakeCount           int     `gorm:"default:0" json:"sudden_brake_count"`
+	SuddenBrakeDeduction       float64 `gorm:"type:decimal(5,2);default:0" json:"sudden_brake_deduction"`
+	SuddenAccelCount           int     `gorm:"default:0" json:"sudden_accel_count"`
+	SuddenAccelDeduction       float64 `gorm:"type:decimal(5,2);default:0" json:"sudden_accel_deduction"`
+	SharpTurnCount             int     `gorm:"default:0" json:"sharp_turn_count"`
+	SharpTurnDeduction         float64 `gorm:"type:decimal(5,2);default:0" json:"sharp_turn_deduction"`
+	LaneDeviationCount         int     `gorm:"default:0" json:"lane_deviation_count"`
+	LaneDeviationDeduction     float64 `gorm:"type:decimal(5,2);default:0" json:"lane_deviation_deduction"`
+	PhoneUsageCount            int     `gorm:"default:0" json:"phone_usage_count"`
+	PhoneUsageDeduction        float64 `gorm:"type:decimal(5,2);default:0" json:"phone_usage_deduction"`
+	SmokingCount               int     `gorm:"default:0" json:"smoking_count"`
+	SmokingDeduction           float64 `gorm:"type:decimal(5,2);default:0" json:"smoking_deduction"`
+	SeatbeltViolationCount     int     `gorm:"default:0" json:"seatbelt_violation_count"`
+	SeatbeltViolationDeduction float64 `gorm:"type:decimal(5,2);default:0" json:"seatbelt_violation_deduction"`
+	RouteDeviationCount        int     `gorm:"default:0" json:"route_deviation_count"`
+	RouteDeviationDeduction    float64 `gorm:"type:decimal(5,2);default:0" json:"route_deviation_deduction"`
+	FatigueAlarmCount          int     `gorm:"default:0" json:"fatigue_alarm_count"`
+	TotalDistance              float64 `gorm:"type:decimal(10,2);default:0" json:"total_distance"`
+	DrivingDuration            int     `gorm:"default:0" json:"driving_duration"`
+	NightDrivingDuration       int     `gorm:"default:0" json:"night_driving_duration"`
+}
+
+func (DrivingScore) TableName() string {
+	return "driving_scores"
 }
 
 type VehicleTrack struct {
-	ID            int64     `json:"id"`
-	VehicleID     int64     `json:"vehicle_id"`
-	WaybillID     int64     `json:"waybill_id"`
-	DriverID      int64     `json:"driver_id"`
-	Latitude      float64   `json:"latitude"`
-	Longitude     float64   `json:"longitude"`
-	Altitude      float64   `json:"altitude"`
-	Speed         float64   `json:"speed"`
-	Direction     int       `json:"direction"`
+	BaseModel
+	VehicleID      int64     `gorm:"index;not null" json:"vehicle_id"`
+	WaybillID      int64     `gorm:"index" json:"waybill_id"`
+	DriverID       int64     `gorm:"index" json:"driver_id"`
+	Latitude       float64   `gorm:"type:decimal(10,7);not null" json:"latitude"`
+	Longitude      float64   `gorm:"type:decimal(10,7);not null" json:"longitude"`
+	Altitude       float64   `gorm:"type:decimal(8,2)" json:"altitude"`
+	Speed          float64   `gorm:"type:decimal(5,2)" json:"speed"`
+	Direction      int       `json:"direction"`
 	SatelliteCount int       `json:"satellite_count"`
-	Accuracy      float64   `json:"accuracy"`
-	GPSTime       time.Time `json:"gps_time"`
-	CreatedAt     time.Time `json:"created_at"`
+	Accuracy       float64   `gorm:"type:decimal(5,2)" json:"accuracy"`
+	GPSTime        time.Time `gorm:"index;not null" json:"gps_time"`
+}
+
+func (VehicleTrack) TableName() string {
+	return "vehicle_tracks"
 }
 
 type RealtimeVehicleStatus struct {

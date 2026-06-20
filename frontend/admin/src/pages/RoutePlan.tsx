@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import {
   Row,
   Col,
@@ -22,6 +22,7 @@ import {
   Empty,
   Spin,
   Alert,
+  Modal,
 } from 'antd'
 import {
   EnvironmentOutlined,
@@ -36,10 +37,12 @@ import {
   ExclamationCircleOutlined,
   ReloadOutlined,
   ZoomInOutlined,
+  WarningTwoTone,
 } from '@ant-design/icons'
 import AMap from '@/components/AMap'
-import api from '@/services/api'
+import { routeApi } from '@/services/api'
 import { formatDistance, formatDuration } from '@/utils/auth'
+import WebSocketManager from '@/services/ws'
 
 const { Title, Text, Paragraph } = Typography
 const { Option } = Select
@@ -85,6 +88,15 @@ interface RouteResult {
 
 type StrategyType = 'shortest' | 'safest' | 'economic'
 
+interface DeviationEvent {
+  waybill_id: number
+  vehicle_plate: string
+  current_lat: number
+  current_lng: number
+  planned_route_id: number
+  deviation_distance: number
+}
+
 const RoutePlan: React.FC = () => {
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
@@ -98,17 +110,41 @@ const RoutePlan: React.FC = () => {
   const [originPicked, setOriginPicked] = useState<[number, number] | null>(null)
   const [destPicked, setDestPicked] = useState<[number, number] | null>(null)
   const [pickingMode, setPickingMode] = useState<'origin' | 'dest' | null>(null)
+  const [planId, setPlanId] = useState<number | null>(null)
+  const [deviationModal, setDeviationModal] = useState(false)
+  const [currentDeviation, setCurrentDeviation] = useState<DeviationEvent | null>(null)
+  const [replanLoading, setReplanLoading] = useState(false)
 
-  const fetchRestricted = async () => {
+  const fetchRestricted = useCallback(async () => {
     try {
-      const res: any = await api.get('/routes/restricted-areas')
-      setRestrictedAreas(res?.list || [])
+      const data = await routeApi.listRestrictedAreas()
+      setRestrictedAreas(data || [])
     } catch (e) { }
-  }
-
-  React.useEffect(() => {
-    fetchRestricted()
   }, [])
+
+  useEffect(() => {
+    fetchRestricted()
+
+    const unsub = WebSocketManager.getInstance().on('route_deviation', (deviation: DeviationEvent) => {
+      setCurrentDeviation(deviation)
+      setDeviationModal(true)
+      message.warning({
+        content: (
+          <div>
+            <div style={{ fontWeight: 600 }}>
+              <WarningTwoTone /> 车辆偏航：{deviation.vehicle_plate}
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              偏离路线 {deviation.deviation_distance.toFixed(1)} 米
+            </div>
+          </div>
+        ),
+        duration: 10,
+      })
+    })
+
+    return () => unsub()
+  }, [fetchRestricted])
 
   const handleSubmit = async (values: any) => {
     setLoading(true)
@@ -130,26 +166,60 @@ const RoutePlan: React.FC = () => {
         hazard_class: values.hazard_class,
       }
 
-      const strategies: StrategyType[] = ['shortest', 'safest', 'economic']
-      const results = await Promise.all(
-        strategies.map(s =>
-          api.post<RouteResult>('/routes/plan', {
-            ...payload,
-            strategy: s,
-          }).catch(() => null)
+      const result = await routeApi.planMultiStrategy(payload)
+      if (result && typeof result === 'object') {
+        const routesData = result as any
+        setRoutes({
+          shortest: routesData.shortest || null,
+          safest: routesData.safest || null,
+          economic: routesData.economic || null,
+        })
+        setPlanId(routesData.plan_id || null)
+      } else {
+        const strategies: StrategyType[] = ['shortest', 'safest', 'economic']
+        const results = await Promise.all(
+          strategies.map(s =>
+            routeApi.plan({
+              start: { lat: payload.origin.latitude, lng: payload.origin.longitude, address: payload.origin.address },
+              end: { lat: payload.destination.latitude, lng: payload.destination.longitude, address: payload.destination.address },
+              vehicle_type: payload.vehicle_type,
+              danger_level: Number(payload.hazard_class),
+              strategy: s,
+            }).catch(() => null)
+          )
         )
-      )
-
-      setRoutes({
-        shortest: results[0] as any,
-        safest: results[1] as any,
-        economic: results[2] as any,
-      })
+        setRoutes({
+          shortest: results[0] as unknown as RouteResult,
+          safest: results[1] as unknown as RouteResult,
+          economic: results[2] as unknown as RouteResult,
+        })
+      }
       message.success('路径规划完成')
     } catch (e: any) {
       message.error(e.message || '规划失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleReplan = async () => {
+    if (!currentDeviation) return
+    setReplanLoading(true)
+    try {
+      const result = await routeApi.replan({
+        waybill_id: currentDeviation.waybill_id,
+        current_latitude: currentDeviation.current_lat,
+        current_longitude: currentDeviation.current_lng,
+        route_id: currentDeviation.planned_route_id,
+      })
+      if (result) {
+        message.success('偏航重规划完成')
+        setDeviationModal(false)
+      }
+    } catch (e) {
+      message.error('重规划失败')
+    } finally {
+      setReplanLoading(false)
     }
   }
 
@@ -208,12 +278,27 @@ const RoutePlan: React.FC = () => {
   }] : []
 
   const restrictedPolygons = restrictedAreas.slice(0, 50).map(area => {
-    const r = (area.radius || 500) / 111000
-    return {
-      path: Array.from({ length: 24 }, (_, i) => {
+    let path: [number, number][] = []
+    try {
+      const boundary = (area as any).boundary_polygon
+      if (boundary?.coordinates?.[0]) {
+        path = boundary.coordinates[0].map((p: number[]) => [p[0], p[1]] as [number, number])
+      } else if (area.center_latitude && area.center_longitude) {
+        const r = (area.radius || 500) / 111000
+        path = Array.from({ length: 24 }, (_, i) => {
+          const a = (i / 24) * Math.PI * 2
+          return [area.center_longitude + r * Math.cos(a), area.center_latitude + r * Math.sin(a)] as [number, number]
+        })
+      }
+    } catch (e) {
+      const r = ((area as any).radius || 500) / 111000
+      path = Array.from({ length: 24 }, (_, i) => {
         const a = (i / 24) * Math.PI * 2
         return [area.center_longitude + r * Math.cos(a), area.center_latitude + r * Math.sin(a)] as [number, number]
-      }),
+      })
+    }
+    return {
+      path,
       fillColor: area.level === 2 ? '#ff4d4f' : '#fa8c16',
       strokeColor: area.level === 2 ? '#ff4d4f' : '#fa8c16',
       fillOpacity: 0.08,
@@ -583,6 +668,41 @@ const RoutePlan: React.FC = () => {
           </Card>
         </Col>
       </Row>
+    </div>
+
+      <Modal
+        title={<Space><WarningOutlined style={{ color: '#faad14' }} /> 车辆偏航提醒</Space>}
+        open={deviationModal}
+        onCancel={() => setDeviationModal(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setDeviationModal(false)}>忽略</Button>
+            <Button type="primary" loading={replanLoading} onClick={handleReplan}>
+              立即重规划
+            </Button>
+          </Space>
+        }
+        width={520}
+      >
+        {currentDeviation && (
+          <div>
+            <Alert
+              type="warning"
+              showIcon
+              message={`车辆 ${currentDeviation.vehicle_plate} 已偏离规划路线`}
+              description={`偏离距离 ${currentDeviation.deviation_distance.toFixed(1)} 米，请确认是否需要重新规划路线`}
+              style={{ marginBottom: 16, borderRadius: 8 }}
+            />
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="运单ID">{currentDeviation.waybill_id}</Descriptions.Item>
+              <Descriptions.Item label="当前位置">
+                {currentDeviation.current_lat.toFixed(6)}, {currentDeviation.current_lng.toFixed(6)}
+              </Descriptions.Item>
+              <Descriptions.Item label="原路线ID">{currentDeviation.planned_route_id}</Descriptions.Item>
+            </Descriptions>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

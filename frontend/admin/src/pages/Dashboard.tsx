@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import {
   Row,
   Col,
@@ -14,6 +14,7 @@ import {
   Avatar,
   List,
   Badge,
+  Descriptions,
 } from 'antd'
 import {
   TruckOutlined,
@@ -25,44 +26,124 @@ import {
   FireOutlined,
   RiseOutlined,
   EnvironmentOutlined,
+  SafetyOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import AMap from '@/components/AMap'
-import api from '@/services/api'
+import { monitorApi, vehicleApi, fatigueApi } from '@/services/api'
 import { useAppStore, StatData, AlarmItem, VehicleStatus } from '@/store/app'
 import { formatDateTime, formatDistance } from '@/utils/auth'
 import dayjs from 'dayjs'
+import WebSocketManager from '@/services/ws'
 
 const { Text, Title } = Typography
 
 const Dashboard: React.FC = () => {
-  const { stats, setStats, vehicles, alarms } = useAppStore()
+  const {
+    stats,
+    setStats,
+    vehicles,
+    updateVehicles,
+    alarms,
+    addAlarm,
+    updateAlarm,
+    fetchStats: fetchStoreStats,
+    loading: storeLoading,
+  } = useAppStore()
   const [loading, setLoading] = useState(true)
+  const [realtimeStats, setRealtimeStats] = useState<StatData | null>(null)
 
-  const fetchStats = async () => {
+  const fetchDashboardData = useCallback(async () => {
+    setLoading(true)
     try {
-      const data = await api.get<StatData>('/monitor/statistics')
-      setStats(data)
+      const [statsData, vehiclesData] = await Promise.all([
+        monitorApi.getDashboardStats(),
+        vehicleApi.listRealtimeStatus(),
+      ])
+      setRealtimeStats(statsData)
+      setStats(statsData)
+      updateVehicles(vehiclesData || [])
     } finally {
       setLoading(false)
     }
-  }
+  }, [setStats, updateVehicles])
 
   useEffect(() => {
-    fetchStats()
-    const timer = setInterval(fetchStats, 60000)
-    return () => clearInterval(timer)
-  }, [])
+    fetchDashboardData()
+    const timer = setInterval(fetchDashboardData, 60000)
+
+    const unsub1 = WebSocketManager.getInstance().on('new_alarm', async (alarm: AlarmItem) => {
+      addAlarm(alarm)
+      try {
+        const snapshotRes = await fatigueApi.getSnapshotURL(alarm.id)
+        if (snapshotRes?.url) {
+          updateAlarm(alarm.id, { snap_image_url: snapshotRes.url })
+        }
+      } catch (e) {}
+    })
+
+    const unsub2 = WebSocketManager.getInstance().on('vehicle_status', (vehicle: VehicleStatus) => {
+      updateVehicles(
+        vehicles.map(v => (v.vehicle_id === vehicle.vehicle_id ? { ...v, ...vehicle } : v))
+      )
+    })
+
+    const unsub3 = WebSocketManager.getInstance().on('alarm_updated', (alarm: Partial<AlarmItem>) => {
+      if (alarm.id) {
+        updateAlarm(alarm.id, alarm)
+      }
+    })
+
+    return () => {
+      clearInterval(timer)
+      unsub1()
+      unsub2()
+      unsub3()
+    }
+  }, [fetchDashboardData, addAlarm, updateAlarm, updateVehicles, vehicles])
+
+  const displayStats = realtimeStats || stats
 
   const trendChart = React.useMemo(() => {
-    if (!stats?.daily_trend?.length) return {}
+    if (!displayStats?.daily_trend?.length) {
+      return {
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['报警数', '预警事件'], top: 0 },
+        grid: { left: 40, right: 20, top: 40, bottom: 30 },
+        xAxis: {
+          type: 'category',
+          data: Array.from({ length: 7 }, (_, i) => dayjs().subtract(6 - i, 'day').format('MM-DD')),
+          axisLine: { lineStyle: { color: '#e5e7eb' } },
+        },
+        yAxis: { type: 'value', axisLine: { show: false }, splitLine: { lineStyle: { color: '#f0f0f0' } } },
+        series: [
+          {
+            name: '报警数',
+            type: 'bar',
+            data: Array.from({ length: 7 }, () => 0),
+            itemStyle: { color: '#1677ff', borderRadius: [4, 4, 0, 0] },
+            barWidth: 14,
+          },
+          {
+            name: '预警事件',
+            type: 'line',
+            smooth: true,
+            data: Array.from({ length: 7 }, () => 0),
+            itemStyle: { color: '#fa8c16' },
+            lineStyle: { width: 3 },
+            areaStyle: { color: 'rgba(250,140,22,0.1)' },
+          },
+        ],
+      }
+    }
     return {
       tooltip: { trigger: 'axis' },
       legend: { data: ['报警数', '预警事件'], top: 0 },
       grid: { left: 40, right: 20, top: 40, bottom: 30 },
       xAxis: {
         type: 'category',
-        data: stats.daily_trend.slice().reverse().map(d => dayjs(d.date).format('MM-DD')),
+        data: displayStats.daily_trend.slice().reverse().map(d => dayjs(d.date).format('MM-DD')),
         axisLine: { lineStyle: { color: '#e5e7eb' } },
       },
       yAxis: { type: 'value', axisLine: { show: false }, splitLine: { lineStyle: { color: '#f0f0f0' } } },
@@ -70,7 +151,7 @@ const Dashboard: React.FC = () => {
         {
           name: '报警数',
           type: 'bar',
-          data: stats.daily_trend.slice().reverse().map(d => d.alarms),
+          data: displayStats.daily_trend.slice().reverse().map(d => d.alarms),
           itemStyle: { color: '#1677ff', borderRadius: [4, 4, 0, 0] },
           barWidth: 14,
         },
@@ -78,17 +159,16 @@ const Dashboard: React.FC = () => {
           name: '预警事件',
           type: 'line',
           smooth: true,
-          data: stats.daily_trend.slice().reverse().map(d => d.events),
+          data: displayStats.daily_trend.slice().reverse().map(d => d.events),
           itemStyle: { color: '#fa8c16' },
           lineStyle: { width: 3 },
           areaStyle: { color: 'rgba(250,140,22,0.1)' },
         },
       ],
     }
-  }, [stats])
+  }, [displayStats])
 
   const alarmTypeChart = React.useMemo(() => {
-    if (!stats?.alarm_type_distribution?.length) return {}
     const typeMap: Record<string, string> = {
       fatigue_perclos: '疲劳瞌睡',
       excessive_yawn: '频繁打哈欠',
@@ -98,6 +178,24 @@ const Dashboard: React.FC = () => {
       smoking: '抽烟',
       no_seatbelt: '未系安全带',
       continuous_fatigue: '连续疲劳',
+    }
+    if (!displayStats?.alarm_type_distribution?.length) {
+      return {
+        tooltip: { trigger: 'item' },
+        legend: { type: 'scroll', orient: 'vertical', right: 10, top: 'center' },
+        series: [
+          {
+            type: 'pie',
+            radius: ['45%', '72%'],
+            center: ['35%', '50%'],
+            avoidLabelOverlap: false,
+            itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+            label: { show: false },
+            data: [],
+          },
+        ],
+        color: ['#ff4d4f', '#fa8c16', '#faad14', '#a0d911', '#13c2c2', '#1677ff', '#722ed1', '#eb2f96'],
+      }
     }
     return {
       tooltip: { trigger: 'item' },
@@ -110,7 +208,7 @@ const Dashboard: React.FC = () => {
           avoidLabelOverlap: false,
           itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
           label: { show: false },
-          data: stats.alarm_type_distribution.map(d => ({
+          data: displayStats.alarm_type_distribution.map(d => ({
             name: typeMap[d.alarm_type] || d.alarm_type,
             value: d.count,
           })),
@@ -118,7 +216,7 @@ const Dashboard: React.FC = () => {
       ],
       color: ['#ff4d4f', '#fa8c16', '#faad14', '#a0d911', '#13c2c2', '#1677ff', '#722ed1', '#eb2f96'],
     }
-  }, [stats])
+  }, [displayStats])
 
   const vehicleMapData = React.useMemo(() => {
     return vehicles.map(v => ({
@@ -149,8 +247,8 @@ const Dashboard: React.FC = () => {
     )
   }
 
-  const StatCard = ({ icon, title, value, suffix, color, extra, trend }: any) => (
-    <Card bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 20 }}>
+  const StatCard = ({ icon, title, value, suffix, color, extra, trend, loading }: any) => (
+    <Card bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 20 }} loading={loading}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div>
           <Text type="secondary" style={{ fontSize: 13 }}>{title}</Text>
@@ -193,12 +291,13 @@ const Dashboard: React.FC = () => {
           <StatCard
             icon={<TruckOutlined />}
             title="在线车辆"
-            value={stats?.running_vehicles || 0}
-            suffix={`/ ${stats?.total_vehicles || 0} 辆`}
+            value={displayStats?.running_vehicles || 0}
+            suffix={`/ ${displayStats?.total_vehicles || 0} 辆`}
             color="#1677ff"
+            loading={loading}
             extra={
               <Progress
-                percent={Math.round(((stats?.running_vehicles || 0) / Math.max(stats?.total_vehicles || 1, 1)) * 100)}
+                percent={Math.round(((displayStats?.running_vehicles || 0) / Math.max(displayStats?.total_vehicles || 1, 1)) * 100)}
                 showInfo={false}
                 size="small"
                 strokeColor="#1677ff"
@@ -211,27 +310,30 @@ const Dashboard: React.FC = () => {
           <StatCard
             icon={<UserOutlined />}
             title="在岗驾驶员"
-            value={stats?.total_drivers || 0}
+            value={displayStats?.total_drivers || 0}
             suffix="人"
             color="#52c41a"
+            loading={loading}
           />
         </Col>
         <Col xs={24} sm={12} md={6}>
           <StatCard
             icon={<FileTextOutlined />}
             title="在途运单"
-            value={stats?.in_transit_waybills || 0}
-            suffix={`/ ${stats?.total_waybills || 0}`}
+            value={displayStats?.in_transit_waybills || 0}
+            suffix={`/ ${displayStats?.total_waybills || 0}`}
             color="#722ed1"
+            loading={loading}
           />
         </Col>
         <Col xs={24} sm={12} md={6}>
           <StatCard
             icon={<AlertOutlined />}
             title="待处理报警"
-            value={stats?.pending_alarms || 0}
-            suffix={`今日 ${stats?.today_alarms || 0}`}
+            value={displayStats?.pending_alarms || 0}
+            suffix={`今日 ${displayStats?.today_alarms || 0}`}
             color="#ff4d4f"
+            loading={loading}
           />
         </Col>
       </Row>
@@ -241,21 +343,43 @@ const Dashboard: React.FC = () => {
           <StatCard
             icon={<FieldTimeOutlined />}
             title="今日里程"
-            value={stats?.today_mileage_km?.toFixed(1) || '0'}
+            value={displayStats?.today_mileage_km?.toFixed?.(1) || '0'}
             suffix="km"
             color="#13c2c2"
+            loading={loading}
           />
         </Col>
         <Col xs={24} sm={12} md={3}>
           <StatCard
             icon={<WarningOutlined />}
             title="今日预警事件"
-            value={stats?.today_fatigue_events || 0}
+            value={displayStats?.today_fatigue_events || 0}
             suffix="起"
             color="#fa8c16"
+            loading={loading}
           />
         </Col>
-        <Col xs={24} md={18}>
+        <Col xs={24} sm={12} md={3}>
+          <StatCard
+            icon={<SafetyOutlined />}
+            title="待处理救援"
+            value={displayStats?.rescue_stats?.pending || 0}
+            suffix={`/ ${displayStats?.rescue_stats?.total || 0}`}
+            color="#eb2f96"
+            loading={loading}
+          />
+        </Col>
+        <Col xs={24} sm={12} md={3}>
+          <StatCard
+            icon={<ThunderboltOutlined />}
+            title="活跃天气预警"
+            value={displayStats?.weather_alerts?.active || 0}
+            suffix="条"
+            color="#faad14"
+            loading={loading}
+          />
+        </Col>
+        <Col xs={24} md={12}>
           <Card bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
               <Space>
@@ -264,7 +388,7 @@ const Dashboard: React.FC = () => {
               </Space>
               <Tag color="blue" style={{ margin: 0 }}>实时刷新</Tag>
             </div>
-            {stats?.daily_trend?.length ? (
+            {displayStats?.daily_trend?.length ? (
               <ReactECharts option={trendChart} style={{ height: 180 }} notMerge lazyUpdate />
             ) : (
               <Empty description="暂无数据" style={{ padding: 20 }} />
@@ -298,7 +422,7 @@ const Dashboard: React.FC = () => {
         </Col>
         <Col xs={24} lg={8} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card bordered={false} style={{ borderRadius: 12, flex: 1 }} title={<Space><AlertOutlined style={{ color: '#ff4d4f' }} /> 报警类型分布</Card>}>
-            {stats?.alarm_type_distribution?.length ? (
+            {displayStats?.alarm_type_distribution?.length ? (
               <ReactECharts option={alarmTypeChart} style={{ height: 220 }} notMerge />
             ) : (
               <Empty description="暂无报警" style={{ padding: 40 }} />

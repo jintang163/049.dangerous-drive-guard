@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import {
   Row,
   Col,
@@ -22,6 +22,7 @@ import {
   message,
   Modal,
   Form,
+  Image,
 } from 'antd'
 import {
   TruckOutlined,
@@ -36,20 +37,37 @@ import {
   ThunderboltOutlined,
   ReloadOutlined,
   DashboardOutlined,
+  VideoCameraOutlined,
+  EyeOutlined,
 } from '@ant-design/icons'
 import AMap from '@/components/AMap'
-import { useAppStore, VehicleStatus, AlarmItem } from '@/store/app'
-import api from '@/services/api'
+import { useAppStore, VehicleStatus, AlarmItem, StatData, ServiceArea } from '@/store/app'
+import { vehicleApi, monitorApi, routeApi, fatigueApi } from '@/services/api'
+import type { PageParams } from '@/services/api'
 import { formatDateTime, formatDistance, formatDuration } from '@/utils/auth'
 import WebSocketManager from '@/services/ws'
+import dayjs from 'dayjs'
 
 const { Title, Text, Paragraph } = Typography
 const { Option } = Select
 
 const Monitor: React.FC = () => {
-  const { vehicles, alarms, updateVehicles, selectedVehicle, setSelectedVehicle, setUnreadAlarmCount } = useAppStore()
+  const {
+    vehicles,
+    alarms,
+    updateVehicles,
+    upsertVehicle,
+    addAlarm,
+    updateAlarm,
+    selectedVehicle,
+    setSelectedVehicle,
+    setUnreadAlarmCount,
+    fetchVehicles: fetchStoreVehicles,
+    loading: storeLoading,
+  } = useAppStore()
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [mediaLoading, setMediaLoading] = useState(false)
   const [searchText, setSearchText] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [newAlarms, setNewAlarms] = useState<AlarmItem[]>([])
@@ -59,30 +77,69 @@ const Monitor: React.FC = () => {
   const [historyRecords, setHistoryRecords] = useState<any[]>([])
   const [restrictedAreas, setRestrictedAreas] = useState<any[]>([])
   const [form] = Form.useForm()
-  const [serviceAreas, setServiceAreas] = useState<any[]>([])
+  const [serviceAreas, setServiceAreas] = useState<ServiceArea[]>([])
+  const [statistics, setStatistics] = useState<StatData | null>(null)
+  const [detailVideoURL, setDetailVideoURL] = useState<string>('')
+  const [detailSnapshotURL, setDetailSnapshotURL] = useState<string>('')
+  const [recommendedAreas, setRecommendedAreas] = useState<any[]>([])
 
-  const fetchVehicles = async () => {
+  const fetchVehicles = useCallback(async () => {
     try {
-      const res: any = await api.get('/monitor/vehicles/realtime')
-      updateVehicles(res?.list || [])
+      const data = await vehicleApi.listRealtimeStatus()
+      updateVehicles(data || [])
     } finally {
       setLoading(false)
     }
-  }
+  }, [updateVehicles])
 
-  const fetchRestrictedAreas = async () => {
+  const fetchStatistics = useCallback(async () => {
     try {
-      const res: any = await api.get('/routes/restricted-areas')
-      setRestrictedAreas(res?.list || [])
+      const data = await monitorApi.getStatistics()
+      setStatistics(data)
     } catch (e) {}
-  }
+  }, [])
+
+  const fetchRestrictedAreas = useCallback(async () => {
+    try {
+      const data = await routeApi.listRestrictedAreas()
+      setRestrictedAreas(data || [])
+    } catch (e) {}
+  }, [])
+
+  const fetchVehicleMedia = useCallback(async (alarmId: number) => {
+    setMediaLoading(true)
+    try {
+      const [videoRes, snapshotRes] = await Promise.all([
+        fatigueApi.getVideoURL(alarmId).catch(() => ({ url: '' })),
+        fatigueApi.getSnapshotURL(alarmId).catch(() => ({ url: '' })),
+      ])
+      setDetailVideoURL(videoRes?.url || '')
+      setDetailSnapshotURL(snapshotRes?.url || '')
+    } finally {
+      setMediaLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     fetchVehicles()
+    fetchStatistics()
     fetchRestrictedAreas()
     const timer = setInterval(fetchVehicles, 30000)
-    const unsub = WebSocketManager.getInstance().on('new_alarm', (alarm) => {
+    const statsTimer = setInterval(fetchStatistics, 60000)
+
+    const unsub1 = WebSocketManager.getInstance().on('vehicle_status', (vehicle: VehicleStatus) => {
+      upsertVehicle(vehicle)
+    })
+
+    const unsub2 = WebSocketManager.getInstance().on('new_alarm', async (alarm: AlarmItem) => {
+      addAlarm(alarm)
       setNewAlarms(prev => [alarm, ...prev].slice(0, 10))
+      try {
+        const snapshotRes = await fatigueApi.getSnapshotURL(alarm.id)
+        if (snapshotRes?.url) {
+          updateAlarm(alarm.id, { snap_image_url: snapshotRes.url })
+        }
+      } catch (e) {}
       message.warning({
         content: (
           <div>
@@ -95,15 +152,25 @@ const Monitor: React.FC = () => {
         duration: 8,
       })
     })
+
+    const unsub3 = WebSocketManager.getInstance().on('alarm_updated', (alarm: Partial<AlarmItem>) => {
+      if (alarm.id) {
+        updateAlarm(alarm.id, alarm)
+      }
+    })
+
     return () => {
       clearInterval(timer)
-      unsub()
+      clearInterval(statsTimer)
+      unsub1()
+      unsub2()
+      unsub3()
     }
-  }, [])
+  }, [fetchVehicles, fetchStatistics, fetchRestrictedAreas, upsertVehicle, addAlarm, updateAlarm])
 
   useEffect(() => {
     setUnreadAlarmCount(0)
-  }, [alarms])
+  }, [alarms, setUnreadAlarmCount])
 
   const filteredVehicles = vehicles.filter(v => {
     if (searchText) {
@@ -162,11 +229,18 @@ const Monitor: React.FC = () => {
   const handleVehicleClick = async (v: VehicleStatus) => {
     setSelectedVehicle(v)
     setDetailLoading(true)
+    setDetailVideoURL('')
+    setDetailSnapshotURL('')
     try {
-      const detail: any = await api.get(`/monitor/vehicle/${v.vehicle_id}/status`)
+      const detail = await vehicleApi.getRealtimeStatus(v.vehicle_id)
       setVehicleDetail(detail)
-      const recs: any = await api.get(`/fatigue/history/${v.vehicle_id}`, { page: 1, page_size: 20 })
+      const recs = await fatigueApi.history({ vehicle_id: v.vehicle_id, page: 1, page_size: 20 })
       setHistoryRecords(recs?.list || [])
+
+      const latestAlarm = alarms.find(a => a.vehicle_id === v.vehicle_id)
+      if (latestAlarm) {
+        await fetchVehicleMedia(latestAlarm.id)
+      }
     } finally {
       setDetailLoading(false)
     }
@@ -175,8 +249,11 @@ const Monitor: React.FC = () => {
   const handleSendIntercom = async (values: any) => {
     if (!selectedVehicle) return
     try {
-      await api.post('/monitor/intercom', {
-        vehicle_id: selectedVehicle.vehicle_id,
+      const userInfo = localStorage.getItem('ddg_user_info')
+      const operatorId = userInfo ? JSON.parse(userInfo).id : 1
+      await monitorApi.voiceIntercom(selectedVehicle.vehicle_id, {
+        action: 'start',
+        operator_id: operatorId,
         message: values.message,
         priority: values.priority || 1,
       })
@@ -188,20 +265,19 @@ const Monitor: React.FC = () => {
 
   const handleDispatchService = async () => {
     try {
-      const areas: any = await api.get('/transport/service-areas/recommend', {
-        lat: selectedVehicle?.latitude,
-        lng: selectedVehicle?.longitude,
-        fatigue_level: selectedVehicle?.fatigue_level,
+      const areas = await routeApi.recommendServiceArea({
+        waybill_id: selectedVehicle?.waybill_id || 0,
+        fatigue_score: selectedVehicle?.fatigue_score,
       })
-      setServiceAreas(areas?.list || [])
+      setRecommendedAreas(areas || [])
       setDispatchModal(true)
     } catch (e) { }
   }
 
   const handleConfirmDispatch = async (areaId: number, restDuration: number) => {
+    if (!selectedVehicle) return
     try {
-      await api.post('/monitor/dispatch/service-area', {
-        vehicle_id: selectedVehicle?.vehicle_id,
+      await monitorApi.dispatchServiceArea(selectedVehicle.vehicle_id, {
         service_area_id: areaId,
         reason: `调度停靠 - ${selectedVehicle?.fatigue_level === 'fatigue' ? '严重疲劳' : '预警状态'}`,
         rest_duration: restDuration,
@@ -531,7 +607,7 @@ const Monitor: React.FC = () => {
               </Descriptions.Item>
             </Descriptions>
 
-            <Card size="small" title="近期疲劳记录" style={{ borderRadius: 8 }}>
+            <Card size="small" title="近期疲劳记录" style={{ borderRadius: 8, marginBottom: 16 }}>
               {historyRecords.length ? (
                 <List
                   size="small"
@@ -549,13 +625,58 @@ const Monitor: React.FC = () => {
                         <Text type="secondary" style={{ fontSize: 12 }}>
                           车速 {Math.round(r.vehicle_speed)}km/h
                         </Text>
-                        {r.is_alarm_triggered && <AlertOutlined style={{ color: '#ff4d4f' }} />}
+                        {r.is_alarm_triggered && <AlertOutlined style={{ color: '#ff4d4f' }} />
                       </Space>
                     </List.Item>
                   )}
                 />
               ) : (
                 <Empty description="暂无记录" />
+              )}
+            </Card>
+
+            <Card size="small" title={<Space><VideoCameraOutlined /> 疲劳快照和视频</Space>} style={{ borderRadius: 8 }}>
+              {mediaLoading ? (
+                <div style={{ padding: 20, textAlign: 'center' }}><Spin tip="加载中..." /></div>
+              ) : (
+                <Row gutter={8}>
+                  <Col span={12}>
+                    {detailSnapshotURL ? (
+                      <Image src={detailSnapshotURL} />
+                    ) : (
+                      <div style={{
+                        background: '#f5f5f5',
+                        borderRadius: 6,
+                        height: 120,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#8c8c8c',
+                        fontSize: 12,
+                      }}>
+                        <EyeOutlined /> 无快照图片
+                      </div>
+                    )}
+                  </Col>
+                  <Col span={12}>
+                    {detailVideoURL ? (
+                      <video controls src={detailVideoURL} style={{ width: '100%', borderRadius: 6 }} />
+                    ) : (
+                      <div style={{
+                        background: '#f5f5f5',
+                        borderRadius: 6,
+                        height: 120,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#8c8c8c',
+                        fontSize: 12,
+                      }}>
+                        <VideoCameraOutlined /> 无视频片段
+                      </div>
+                    )}
+                  </Col>
+                </Row>
               )}
             </Card>
           </div>
@@ -616,9 +737,9 @@ const Monitor: React.FC = () => {
         footer={null}
         width={600}
       >
-        {serviceAreas.length ? (
+        {recommendedAreas.length ? (
           <List
-            dataSource={serviceAreas.slice(0, 5)}
+            dataSource={recommendedAreas.slice(0, 5)}
             renderItem={(area: any) => (
               <Card
                 size="small"
@@ -639,9 +760,9 @@ const Monitor: React.FC = () => {
                     <Button
                       type="primary"
                       size="small"
-                      onClick={() => handleConfirmDispatch(area.id, area.rest_duration_recommend || 20)}
+                      onClick={() => handleConfirmDispatch(area.id, area.rest_duration_recommend || area.recommended_rest_duration || 20)}
                     >
-                      调度停靠 {area.rest_duration_recommend || 20}分钟
+                      调度停靠 {area.rest_duration_recommend || area.recommended_rest_duration || 20}分钟
                     </Button>
                   </Space>
                 }

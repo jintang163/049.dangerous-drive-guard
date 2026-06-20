@@ -16,6 +16,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/spf13/viper v1.18.2
+	golang.org/x/crypto v0.19.0
 	go.uber.org/zap v1.27.0
 	gonum.org/v1/gonum v0.15.0
 	google.golang.org/protobuf v1.33.0

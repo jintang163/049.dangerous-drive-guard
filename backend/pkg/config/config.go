@@ -15,6 +15,7 @@ type Config struct {
 	AI         AIConfig         `mapstructure:"ai"`
 	Map        MapConfig        `mapstructure:"map"`
 	Blockchain BlockchainConfig `mapstructure:"blockchain"`
+	Route      RouteConfig      `mapstructure:"route"`
 	JWT        JWTConfig        `mapstructure:"jwt"`
 	Log        LogConfig        `mapstructure:"log"`
 }
@@ -133,9 +134,21 @@ type FabricConfig struct {
 	ChaincodeName string `mapstructure:"chaincode_name"`
 }
 
+type RouteConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	DefaultStrategy string `mapstructure:"default_strategy"`
+	CacheTTL       int    `mapstructure:"cache_ttl"`
+}
+
 type JWTConfig struct {
 	Secret       string `mapstructure:"secret"`
 	ExpireHours  int    `mapstructure:"expire_hours"`
+}
+
+type RouteConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	DefaultStrategy string `mapstructure:"default_strategy"`
+	CacheTTL        int    `mapstructure:"cache_ttl"`
 }
 
 type LogConfig struct {

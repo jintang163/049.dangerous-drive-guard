@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
@@ -13,7 +15,7 @@ import (
 )
 
 type VehicleService struct {
-	db *database.TIDB
+	db *gorm.DB
 }
 
 type DiagnosticData struct {
@@ -389,4 +391,97 @@ func (s *VehicleService) GetScoreRanking(ctx context.Context, orgID int64, perio
 		result = append(result, &r)
 	}
 	return result, nil
+}
+
+func (s *VehicleService) GetRealtimeStatus(ctx context.Context, vehicleID int64) (*model.RealtimeVehicleStatus, error) {
+	var v model.Vehicle
+	err := s.db.WithContext(ctx).Where("id = ?", vehicleID).First(&v).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var driverName string
+	if v.DriverID > 0 {
+		var driver model.User
+		s.db.WithContext(ctx).Select("real_name").Where("id = ?", v.DriverID).First(&driver)
+		driverName = driver.RealName
+	}
+
+	status := &model.RealtimeVehicleStatus{
+		VehicleID:     v.ID,
+		PlateNumber:   v.PlateNumber,
+		VehicleType:   v.VehicleType,
+		Status:        v.Status,
+		DriverID:      v.DriverID,
+		DriverName:    driverName,
+		LastUpdateTime: time.Now(),
+	}
+
+	var latestTrack model.VehicleTrack
+	s.db.WithContext(ctx).Where("vehicle_id = ?", vehicleID).Order("gps_time DESC").First(&latestTrack)
+	if latestTrack.ID > 0 {
+		status.Latitude = latestTrack.Latitude
+		status.Longitude = latestTrack.Longitude
+		status.Speed = latestTrack.Speed
+		status.Direction = latestTrack.Direction
+		status.GPSTime = latestTrack.GPSTime
+	}
+
+	var latestDiag struct {
+		FuelLevel      float64
+		EngineRPM      int
+		TirePressureOK bool
+	}
+	s.db.WithContext(ctx).Table("vehicle_diagnostics").
+		Select("fuel_level, engine_rpm").
+		Where("vehicle_id = ?", vehicleID).
+		Order("report_time DESC").
+		Limit(1).
+		Scan(&latestDiag)
+	status.FuelLevel = latestDiag.FuelLevel
+	if latestDiag.EngineRPM > 0 {
+		status.EngineStatus = "running"
+	} else {
+		status.EngineStatus = "stopped"
+	}
+	status.TirePressureOK = true
+
+	var alertCount int64
+	s.db.WithContext(ctx).Table("fatigue_alarms").
+		Where("vehicle_id = ? AND status IN (?, ?)", vehicleID, "pending", "processing").
+		Count(&alertCount)
+	status.AlertCount = int(alertCount)
+
+	return status, nil
+}
+
+func (s *VehicleService) ListRealtimeStatus(ctx context.Context, orgID int64, status string, page, pageSize int) ([]*model.RealtimeVehicleStatus, int64, error) {
+	var vehicles []*model.Vehicle
+	var total int64
+
+	query := s.db.WithContext(ctx).Model(&model.Vehicle{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+
+	query.Count(&total)
+
+	offset := (page - 1) * pageSize
+	err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&vehicles).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var result []*model.RealtimeVehicleStatus
+	for _, v := range vehicles {
+		rtStatus, _ := s.GetRealtimeStatus(ctx, v.ID)
+		if rtStatus != nil {
+			result = append(result, rtStatus)
+		}
+	}
+
+	return result, total, nil
 }

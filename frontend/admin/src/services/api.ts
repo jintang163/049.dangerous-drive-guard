@@ -1,7 +1,21 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios'
 import { message, Modal } from 'antd'
 import { getToken, clearToken, getTokenExpire } from '@/utils/auth'
-import type { UserInfo } from '@/store/app'
+import type {
+  UserInfo,
+  VehicleStatus,
+  AlarmItem,
+  VehicleItem,
+  DriverItem,
+  WaybillItem,
+  EscortEvent,
+  RescueRequest,
+  WeatherWarning,
+  BlockchainBlock,
+  EvidenceRecord,
+  ServiceArea,
+  StatData,
+} from '@/store/app'
 
 export interface ApiResponse<T = any> {
   code: number
@@ -186,27 +200,27 @@ export const userApi = {
 }
 
 export const vehicleApi = {
-  list: (params?: PageParams) => api.getPage<any>('/vehicles', params),
-  get: (id: number) => api.get<any>(`/vehicles/${id}`),
-  create: (data: any) => api.post<any>('/vehicles', data),
-  update: (id: number, data: any) => api.put<any>(`/vehicles/${id}`, data),
+  list: (params?: PageParams) => api.getPage<VehicleItem>('/vehicles', params),
+  get: (id: number) => api.get<VehicleItem>(`/vehicles/${id}`),
+  create: (data: Partial<VehicleItem>) => api.post<VehicleItem>('/vehicles', data),
+  update: (id: number, data: Partial<VehicleItem>) => api.put<VehicleItem>(`/vehicles/${id}`, data),
   delete: (id: number) => api.delete(`/vehicles/${id}`),
-  diagnostics: (id: number) => api.get<any[]>(`/vehicles/${id}/diagnostics`),
-  uploadDiagnostic: (id: number, data: any) => api.post(`/vehicles/${id}/diagnostics`, data),
-  faults: (id: number) => api.get<any[]>(`/vehicles/${id}/faults`),
-  getRealtimeStatus: (id: number) => api.get<any>(`/vehicles/${id}/status`),
-  listRealtimeStatus: (params?: { org_id?: number }) => api.get<any[]>('/vehicles/status', params),
+  diagnostics: (id: number) => api.get<Array<{ code: string; desc: string; level: string; time: string }>>(`/vehicles/${id}/diagnostics`),
+  uploadDiagnostic: (id: number, data: { code: string; desc: string; level: string }) => api.post(`/vehicles/${id}/diagnostics`, data),
+  faults: (id: number) => api.get<Array<{ code: string; desc: string; level: 'low' | 'medium' | 'high'; time: string }>>(`/vehicles/${id}/faults`),
+  getRealtimeStatus: (id: number) => api.get<VehicleStatus>(`/vehicles/${id}/status`),
+  listRealtimeStatus: (params?: { org_id?: number }) => api.get<VehicleStatus[]>('/vehicles/status', params),
 }
 
 export const driverApi = {
-  list: (params?: PageParams) => api.getPage<any>('/drivers', params),
-  get: (id: number) => api.get<any>(`/drivers/${id}`),
-  create: (data: any) => api.post<any>('/drivers', data),
-  update: (id: number, data: any) => api.put<any>(`/drivers/${id}`, data),
+  list: (params?: PageParams) => api.getPage<DriverItem>('/drivers', params),
+  get: (id: number) => api.get<DriverItem>(`/drivers/${id}`),
+  create: (data: Partial<DriverItem> & { password: string }) => api.post<DriverItem>('/drivers', data),
+  update: (id: number, data: Partial<DriverItem>) => api.put<DriverItem>(`/drivers/${id}`, data),
   delete: (id: number) => api.delete(`/drivers/${id}`),
   getScore: (id: number, params?: { days?: number }) =>
-    api.get<any>(`/drivers/${id}/score`, params),
-  getScoreRank: (params?: { top?: number }) => api.get<any[]>('/drivers/scores/rank', params),
+    api.get<{ driving_score: number; safety_score: number; fatigue_score: number; compliance_score: number }>(`/drivers/${id}/score`, params),
+  getScoreRank: (params?: { top?: number }) => api.get<Array<{ id: number; name: string; score: number; rank: number }>>('/drivers/scores/rank', params),
 }
 
 export const routeApi = {
@@ -227,95 +241,139 @@ export const routeApi = {
 }
 
 export const fatigueApi = {
-  detect: (data: any) => api.post<any>('/fatigue/detect', data),
-  uploadFrame: (data: FormData) => api.post<any>('/fatigue/frames', data, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  detect: (data: { image_base64: string; vehicle_id: number; driver_id: number }) =>
+    api.post<{ fatigue_score: number; fatigue_level: string; alarm_triggered: boolean; landmarks: number[] }>('/fatigue/detect', data),
+  uploadFrame: (data: FormData) =>
+    api.post<{ frame_id: number; fatigue_score: number; processed: boolean }>('/fatigue/frames', data, { headers: { 'Content-Type': 'multipart/form-data' } }),
   history: (params?: PageParams & { vehicle_id?: number; driver_id?: number }) =>
-    api.getPage<any>('/fatigue/records', params),
+    api.getPage<{ id: number; vehicle_id: number; driver_id: number; fatigue_score: number; fatigue_level: string; detection_time: string; vehicle_speed: number; is_alarm_triggered: boolean }>('/fatigue/records', params),
   listAlarms: (params?: PageParams & { status?: string; level?: number; alarm_type?: string }) =>
-    api.getPage<any>('/fatigue/alarms', params),
-  getAlarm: (id: number) => api.get<any>(`/fatigue/alarms/${id}`),
+    api.getPage<AlarmItem>('/fatigue/alarms', params),
+  getAlarm: (id: number) => api.get<AlarmItem>(`/fatigue/alarms/${id}`),
   ackAlarm: (id: number, data: { action: string; remark?: string; operator_id: number }) =>
-    api.post<any>(`/fatigue/alarms/${id}/ack`, data),
+    api.post<{ success: boolean; handled_at: string }>(`/fatigue/alarms/${id}/ack`, data),
   getScore: (driver_id: number, params?: { from?: string; to?: string }) =>
-    api.get<any>('/fatigue/scores', params),
+    api.get<{ average_score: number; alarm_count: number; trend: Array<{ date: string; score: number }> }>('/fatigue/scores', params),
+  uploadVideo: (vehicleID: number, alarmID: number, file: File, onProgress?: (p: number) => void) => {
+    const formData = new FormData()
+    formData.append('vehicle_id', String(vehicleID))
+    formData.append('alarm_id', String(alarmID))
+    formData.append('video', file)
+    return api.post<{ video_id: number; url: string }>('/fatigue/video/upload', formData, {
+      onUploadProgress: (e) => onProgress?.(e.total ? Math.round((e.loaded / e.total) * 100) : 0),
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  uploadSnapshot: (vehicleID: number, alarmID: number, file: File) => {
+    const formData = new FormData()
+    formData.append('vehicle_id', String(vehicleID))
+    formData.append('alarm_id', String(alarmID))
+    formData.append('snapshot', file)
+    return api.post<{ snapshot_id: number; url: string }>('/fatigue/video/snapshot/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  getVideoURL: (alarmID: number) => api.get<{ url: string }>(`/fatigue/video/${alarmID}/video`),
+  getSnapshotURL: (alarmID: number) => api.get<{ url: string }>(`/fatigue/video/${alarmID}/snapshot`),
+  downloadVideo: (alarmID: number) => api.get<Blob>(`/fatigue/video/${alarmID}/download`, undefined, { responseType: 'blob' }),
 }
 
 export const waybillApi = {
   list: (params?: PageParams & { status?: string; danger_level?: number }) =>
-    api.getPage<any>('/waybills', params),
-  get: (id: number) => api.get<any>(`/waybills/${id}`),
-  create: (data: any) => api.post<any>('/waybills', data),
-  update: (id: number, data: any) => api.put<any>(`/waybills/${id}`, data),
+    api.getPage<WaybillItem>('/waybills', params),
+  get: (id: number) => api.get<WaybillItem>(`/waybills/${id}`),
+  create: (data: Partial<WaybillItem>) => api.post<WaybillItem>('/waybills', data),
+  update: (id: number, data: Partial<WaybillItem>) => api.put<WaybillItem>(`/waybills/${id}`, data),
   delete: (id: number) => api.delete(`/waybills/${id}`),
   updateStatus: (id: number, data: { status: string; remark?: string }) =>
-    api.post<any>(`/waybills/${id}/status`, data),
-  getStatusLogs: (id: number) => api.get<any[]>(`/waybills/${id}/status-logs`),
+    api.post<{ success: boolean; updated_at: string }>(`/waybills/${id}/status`, data),
+  getStatusLogs: (id: number) => api.get<Array<{ status: string; time: string; operator: string; remark?: string }>>(`/waybills/${id}/status-logs`),
   sign: (id: number, data: { signature: string; receiver_name: string }) =>
-    api.post<any>(`/waybills/${id}/sign`, data),
-  getBlockchainEvidence: (id: number) => api.get<any>(`/waybills/${id}/blockchain`),
+    api.post<{ success: boolean; signed_at: string; signature_url: string }>(`/waybills/${id}/sign`, data),
+  getBlockchainEvidence: (id: number) => api.get<{ blockchain_hash: string; blockchain_height: number; timestamp: string; evidence: Record<string, any> }>(`/waybills/${id}/blockchain`),
 }
 
 export const escortApi = {
   list: (params?: PageParams & { waybill_id?: number }) =>
-    api.getPage<any>('/escort/events', params),
-  create: (data: any) => api.post<any>('/escort/events', data),
-  get: (id: number) => api.get<any>(`/escort/events/${id}`),
-  getByWaybill: (waybill_id: number) => api.get<any[]>(`/escort/events/waybill/${waybill_id}`),
+    api.getPage<EscortEvent>('/escort/events', params),
+  create: (data: Partial<EscortEvent>) => api.post<EscortEvent>('/escort/events', data),
+  get: (id: number) => api.get<EscortEvent>(`/escort/events/${id}`),
+  getByWaybill: (waybill_id: number) => api.get<EscortEvent[]>(`/escort/events/waybill/${waybill_id}`),
   exportReport: (waybill_id: number) =>
-    api.get<Blob>(`/escort/report/${waybill_id}`, undefined, { responseType: 'blob' as any }),
+    api.get<Blob>(`/escort/report/${waybill_id}`, undefined, { responseType: 'blob' }),
 }
 
 export const rescueApi = {
   listRequests: (params?: PageParams & { status?: string; type?: string }) =>
-    api.getPage<any>('/rescue/requests', params),
-  getRequest: (id: number) => api.get<any>(`/rescue/requests/${id}`),
-  createSOS: (data: any) => api.post<any>('/rescue/sos', data),
-  updateRequest: (id: number, data: any) => api.put<any>(`/rescue/requests/${id}`, data),
+    api.getPage<RescueRequest>('/rescue/requests', params),
+  getRequest: (id: number) => api.get<RescueRequest>(`/rescue/requests/${id}`),
+  createSOS: (data: { vehicle_id: number; latitude: number; longitude: number; rescue_type: string; description: string }) =>
+    api.post<RescueRequest>('/rescue/sos', data),
+  updateRequest: (id: number, data: Partial<RescueRequest>) => api.put<RescueRequest>(`/rescue/requests/${id}`, data),
   assignResource: (id: number, data: { resource_type: string; resource_id: number; distance_km?: number }) =>
-    api.post<any>(`/rescue/requests/${id}/assign`, data),
+    api.post<{ success: boolean; assigned_at: string }>(`/rescue/requests/${id}/assign`, data),
   sendMessage: (id: number, data: { sender: string; role: string; content: string }) =>
-    api.post<any>(`/rescue/requests/${id}/messages`, data),
+    api.post<{ id: number; time: string }>(`/rescue/requests/${id}/messages`, data),
   getResources: (params?: { type?: string; lat?: number; lng?: number; radius_km?: number }) =>
-    api.get<any[]>('/rescue/resources', params),
+    api.get<Array<{ id: number; name: string; type: string; latitude: number; longitude: number; distance_km?: number; available: boolean }>>('/rescue/resources', params),
   listResources: (params?: PageParams & { type?: string }) =>
-    api.getPage<any>('/rescue/resources', params),
+    api.getPage<{ id: number; name: string; type: string; status: string; contact?: string }>('/rescue/resources', params),
 }
 
 export const weatherApi = {
   listWarnings: (params?: PageParams & { status?: string; type?: string; level?: number }) =>
-    api.getPage<any>('/weather/warnings', params),
-  getActiveWarnings: (params?: { province?: string }) => api.get<any[]>('/weather/warnings/active', params),
-  getWarning: (id: number) => api.get<any>(`/weather/warnings/${id}`),
-  getRouteAffectedRoutes: (warning_id: number) => api.get<any[]>(`/weather/warnings/${warning_id}/routes`),
-  replanAffectedRoutes: (warning_id: number) => api.post<any>(`/weather/warnings/${warning_id}/replan`),
+    api.getPage<WeatherWarning>('/weather/warnings', params),
+  getActiveWarnings: (params?: { province?: string }) => api.get<WeatherWarning[]>('/weather/warnings/active', params),
+  getWarning: (id: number) => api.get<WeatherWarning>(`/weather/warnings/${id}`),
+  getRouteAffectedRoutes: (warning_id: number) => api.get<Array<{ waybill_id: number; waybill_no: string; vehicle_plate: string; affected: boolean }>>(`/weather/warnings/${warning_id}/routes`),
+  replanAffectedRoutes: (warning_id: number) => api.post<{ success: boolean; replanned_count: number }>(`/weather/warnings/${warning_id}/replan`),
 }
 
 export const blockchainApi = {
   listBlocks: (params?: { page?: number; page_size?: number; from_height?: number }) =>
-    api.getPage<any>('/blockchain/blocks', params),
-  getBlock: (height: number) => api.get<any>(`/blockchain/blocks/${height}`),
+    api.getPage<BlockchainBlock>('/blockchain/blocks', params),
+  getBlock: (height: number) => api.get<BlockchainBlock>(`/blockchain/blocks/${height}`),
   listEvidence: (params?: PageParams & { business_type?: string }) =>
-    api.getPage<any>('/blockchain/evidence', params),
-  getEvidence: (id: number) => api.get<any>(`/blockchain/evidence/${id}`),
+    api.getPage<EvidenceRecord>('/blockchain/evidence', params),
+  getEvidence: (id: number) => api.get<EvidenceRecord>(`/blockchain/evidence/${id}`),
   createEvidence: (data: { business_type: string; business_id: number; business_no: string; data: Record<string, any> }) =>
-    api.post<any>('/blockchain/evidence', data),
+    api.post<EvidenceRecord>('/blockchain/evidence', data),
   verifyEvidence: (data: { hash: string } | { file: File }) =>
-    api.post<any>('/blockchain/verify', data),
-  getStats: () => api.get<any>('/blockchain/stats'),
+    api.post<{ valid: boolean; evidence?: EvidenceRecord; message: string }>('/blockchain/verify', data),
+  getStats: () => api.get<{ block_height: number; total_transactions: number; today_new: number; data_size_mb: number }>('/blockchain/stats'),
 }
 
 export const monitorApi = {
-  getDashboardStats: () => api.get<any>('/monitor/stats/dashboard'),
-  getBigScreenData: () => api.get<any>('/monitor/stats/big-screen'),
-  listAlarms: (params?: PageParams & { status?: string }) => api.getPage<any>('/monitor/alarms', params),
-  voiceIntercom: (vehicle_id: number, data: { action: 'start' | 'stop'; operator_id: number }) =>
-    api.post<any>(`/monitor/vehicles/${vehicle_id}/intercom`, data),
-  dispatchServiceArea: (vehicle_id: number, data: { service_area_id: number; reason?: string }) =>
-    api.post<any>(`/monitor/vehicles/${vehicle_id}/dispatch-service-area`, data),
+  getDashboardStats: () => api.get<StatData>('/monitor/stats/dashboard'),
+  getStatistics: () => api.get<StatData>('/monitor/statistics'),
+  getBigScreenData: () => api.get<StatData>('/monitor/stats/big-screen'),
+  listAlarms: (params?: PageParams & { status?: string }) => api.getPage<AlarmItem>('/monitor/alarms', params),
+  voiceIntercom: (vehicle_id: number, data: { action: 'start' | 'stop'; operator_id: number; message?: string; priority?: number }) =>
+    api.post<{ success: boolean; session_id?: string }>(`/monitor/vehicles/${vehicle_id}/intercom`, data),
+  dispatchServiceArea: (vehicle_id: number, data: { service_area_id: number; reason?: string; rest_duration?: number }) =>
+    api.post<{ success: boolean; dispatched_at: string }>(`/monitor/vehicles/${vehicle_id}/dispatch-service-area`, data),
   notifyLawEnforcement: (vehicle_id: number, data: { station_id: number; reason: string }) =>
-    api.post<any>(`/monitor/vehicles/${vehicle_id}/notify-law-enforcement`, data),
+    api.post<{ success: boolean; notified_at: string }>(`/monitor/vehicles/${vehicle_id}/notify-law-enforcement`, data),
   exportReport: (params?: { type: string; from: string; to: string }) =>
-    api.get<Blob>('/monitor/export/report', params, { responseType: 'blob' as any }),
+    api.get<Blob>('/monitor/export/report', params, { responseType: 'blob' }),
+}
+
+export const minioApi = {
+  getConfig: () => api.get<{ endpoint: string; bucket: string; region: string; access_key: string }>('/minio/config'),
+  getPresignedUrl: (object_name: string, expires_in?: number) =>
+    api.get<{ url: string; expires_at: string }>('/minio/presigned-url', { object_name, expires_in }),
+  uploadFile: (bucket: string, file: File, onProgress?: (p: number) => void) => {
+    const formData = new FormData()
+    formData.append('bucket', bucket)
+    formData.append('file', file)
+    return api.post<{ url: string; object_name: string; size: number }>('/minio/upload', formData, {
+      onUploadProgress: (e) => onProgress?.(e.total ? Math.round((e.loaded / e.total) * 100) : 0),
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  deleteFile: (object_name: string) => api.delete(`/minio/delete`, { data: { object_name } }),
+  listFiles: (params?: { bucket?: string; prefix?: string }) =>
+    api.get<Array<{ name: string; size: number; last_modified: string; url: string }>>('/minio/files', params),
 }
 
 export default api

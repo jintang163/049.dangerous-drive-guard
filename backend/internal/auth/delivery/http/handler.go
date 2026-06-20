@@ -2,15 +2,11 @@ package http
 
 import (
 	"context"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/cloudwego/hertz/pkg/common/utils"
 
-	"github.com/dangerous-drive-guard/backend/internal/common/model"
-	authSvc "github.com/dangerous-drive-guard/backend/internal/user/service"
-	"github.com/dangerous-drive-guard/backend/pkg/database"
-	"github.com/dangerous-drive-guard/backend/pkg/middleware"
+	"github.com/dangerous-drive-guard/backend/internal/auth/service"
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
 
@@ -20,109 +16,102 @@ type LoginRequest struct {
 	DeviceID string `json:"device_id"`
 }
 
-type LoginResponse struct {
-	AccessToken  string    `json:"access_token"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	TokenType    string    `json:"token_type"`
-	User         *model.User `json:"user"`
-	Permissions  []string  `json:"permissions"`
+type ChangePasswordRequest struct {
+	OldPassword string `json:"old_password" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
 }
 
-func Login(ctx context.Context, c *app.RequestContext) {
+type AuthHandler struct {
+	authService *service.AuthService
+}
+
+func NewAuthHandler(svc *service.AuthService) *AuthHandler {
+	return &AuthHandler{authService: svc}
+}
+
+func (h *AuthHandler) RegisterRoutes(r *app.RouterGroup) {
+	auth := r.Group("/auth")
+	{
+		auth.POST("/login", h.Login)
+		auth.POST("/refresh", h.RefreshToken)
+		auth.POST("/logout", h.Logout)
+		auth.GET("/me", h.GetCurrentUser)
+		auth.PUT("/password", h.ChangePassword)
+	}
+}
+
+func (h *AuthHandler) Login(c context.Context, ctx *app.RequestContext) {
 	var req LoginRequest
-	if err := c.BindAndValidate(&req); err != nil {
-		response.BadRequest(c, err.Error())
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, err.Error())
 		return
 	}
-	var user model.User
-	err := database.GetDB().WithContext(ctx).Table("users").Where("username = ? AND status = 1", req.Username).First(&user).Error
+
+	resp, err := h.authService.Login(c, req.Username, req.Password, req.DeviceID, ctx.ClientIP())
 	if err != nil {
-		response.Unauthorized(c, "用户名或密码错误")
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		response.Unauthorized(c, "用户名或密码错误")
+		response.Unauthorized(ctx, "用户名或密码错误")
 		return
 	}
 
-	token, err := middleware.GenerateToken(user.ID, user.Username, string(user.Role), user.OrgID)
-	if err != nil {
-		response.InternalError(c, "生成Token失败")
-		return
-	}
-
-	now := time.Now()
-	database.GetDB().Exec(`
-		UPDATE users SET last_login_at = ?, last_login_ip = ? WHERE id = ?`,
-		now, c.ClientIP(), user.ID,
-	)
-
-	database.GetDB().Exec(`
-		INSERT INTO user_tokens (user_id, token, expires_at, device_id, ip, created_at)
-		VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 72 HOUR), ?, ?, NOW())`,
-		user.ID, token, req.DeviceID, c.ClientIP(),
-	)
-
-	user.Password = ""
-	permissions := getRolePermissions(user.Role)
-
-	response.Success(c, LoginResponse{
-		AccessToken: token,
-		ExpiresAt:   now.Add(72 * time.Hour),
-		TokenType:   "Bearer",
-		User:        &user,
-		Permissions: permissions,
-	})
+	response.Success(ctx, resp)
 }
 
-func getRolePermissions(role model.UserRole) []string {
-	perms := []string{"dashboard:view", "profile:read", "profile:update"}
-	switch role {
-	case model.RoleAdmin:
-		perms = append(perms,
-			"user:manage", "vehicle:manage", "waybill:manage",
-			"route:plan", "monitor:view", "alarm:handle",
-			"dispatch:command", "score:view", "system:config")
-	case model.RoleDispatcher:
-		perms = append(perms,
-			"vehicle:view", "waybill:create", "waybill:update",
-			"route:plan", "monitor:view", "alarm:handle",
-			"dispatch:command", "score:view")
-	case model.RoleDriver:
-		perms = append(perms,
-			"waybill:view", "route:navigate",
-			"fatigue:report", "diagnostics:upload", "score:view")
-	case model.RoleEscort:
-		perms = append(perms,
-			"waybill:view", "escort:event_report")
-	}
-	return perms
-}
+func (h *AuthHandler) RefreshToken(c context.Context, ctx *app.RequestContext) {
+	userID, _ := ctx.Get("user_id")
+	username, _ := ctx.Get("username")
+	role, _ := ctx.Get("role")
+	orgID, _ := ctx.Get("org_id")
 
-func Refresh(ctx context.Context, c *app.RequestContext) {
-	userID, _ := c.Get("user_id")
-	username, _ := c.Get("username")
-	role, _ := c.Get("role")
-	orgID, _ := c.Get("org_id")
-	token, err := middleware.GenerateToken(
-		authSvc.ToInt64(userID),
-		authSvc.ToString(username),
-		authSvc.ToString(role),
-		authSvc.ToInt64(orgID),
+	token, expiresAt, err := h.authService.RefreshToken(
+		c,
+		service.ToInt64(userID),
+		service.ToString(username),
+		service.ToString(role),
+		service.ToInt64(orgID),
 	)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(ctx, err.Error())
 		return
 	}
-	response.Success(c, map[string]interface{}{
+
+	response.Success(ctx, utils.H{
 		"access_token": token,
-		"expires_at":   time.Now().Add(72 * time.Hour),
+		"expires_at":   expiresAt,
 		"token_type":   "Bearer",
 	})
 }
 
-func Logout(ctx context.Context, c *app.RequestContext) {
-	userID, _ := c.Get("user_id")
-	database.GetDB().Exec(`DELETE FROM user_tokens WHERE user_id = ?`, userID)
-	response.Success(c, map[string]interface{}{"logged_out": true})
+func (h *AuthHandler) Logout(c context.Context, ctx *app.RequestContext) {
+	userID, _ := ctx.Get("user_id")
+	if err := h.authService.Logout(c, service.ToInt64(userID)); err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+	response.Success(ctx, utils.H{"logged_out": true})
+}
+
+func (h *AuthHandler) GetCurrentUser(c context.Context, ctx *app.RequestContext) {
+	userID, _ := ctx.Get("user_id")
+	user, err := h.authService.GetUserByID(c, service.ToInt64(userID))
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+	response.Success(ctx, user)
+}
+
+func (h *AuthHandler) ChangePassword(c context.Context, ctx *app.RequestContext) {
+	userID, _ := ctx.Get("user_id")
+	var req ChangePasswordRequest
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, err.Error())
+		return
+	}
+
+	if err := h.authService.ChangePassword(c, service.ToInt64(userID), req.OldPassword, req.NewPassword); err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, utils.H{"changed": true})
 }

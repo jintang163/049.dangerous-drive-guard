@@ -1,4 +1,16 @@
 import { create } from 'zustand'
+import {
+  vehicleApi,
+  fatigueApi,
+  monitorApi,
+  waybillApi,
+  driverApi,
+  rescueApi,
+  weatherApi,
+  blockchainApi,
+  routeApi,
+} from '@/services/api'
+import type { PageParams } from '@/services/api'
 
 export interface UserInfo {
   id: number
@@ -275,6 +287,19 @@ export interface StatData {
   blockchain_stats?: { block_height: number; total_transactions: number; today_new: number; data_size_mb: number }
 }
 
+interface LoadingState {
+  vehicles: boolean
+  alarms: boolean
+  stats: boolean
+  waybills: boolean
+  drivers: boolean
+  vehiclesList: boolean
+  rescue: boolean
+  weather: boolean
+  blockchain: boolean
+  serviceAreas: boolean
+}
+
 interface AppState {
   user: UserInfo | null
   token: string
@@ -297,6 +322,8 @@ interface AppState {
   serviceAreas: ServiceArea[]
   stats: StatData | null
   wsConnected: boolean
+  loading: LoadingState
+  error: string | null
   setUser: (user: UserInfo | null) => void
   setToken: (token: string) => void
   setPermissions: (perms: string[]) => void
@@ -328,6 +355,19 @@ interface AppState {
   updateServiceAreas: (areas: ServiceArea[]) => void
   setStats: (stats: StatData | null) => void
   setWsConnected: (connected: boolean) => void
+  setLoading: (key: keyof LoadingState, value: boolean) => void
+  setError: (error: string | null) => void
+  fetchVehicles: (params?: { org_id?: number }) => Promise<void>
+  fetchAlarms: (params?: PageParams & { status?: string; level?: number; alarm_type?: string }) => Promise<void>
+  fetchStats: () => Promise<void>
+  fetchWaybills: (params?: PageParams & { status?: string; danger_level?: number }) => Promise<void>
+  fetchDrivers: (params?: PageParams) => Promise<void>
+  fetchVehiclesList: (params?: PageParams) => Promise<void>
+  fetchRescueRequests: (params?: PageParams & { status?: string; type?: string }) => Promise<void>
+  fetchWeatherWarnings: (params?: PageParams & { status?: string; type?: string; level?: number }) => Promise<void>
+  fetchBlockchainBlocks: (params?: { page?: number; page_size?: number; from_height?: number }) => Promise<void>
+  fetchEvidenceRecords: (params?: PageParams & { business_type?: string }) => Promise<void>
+  fetchServiceAreas: (params?: { route_id?: number }) => Promise<void>
   logout: () => void
 }
 
@@ -344,6 +384,19 @@ const initialStats: StatData = {
   today_fatigue_events: 0,
   alarm_type_distribution: [],
   daily_trend: [],
+}
+
+const initialLoading: LoadingState = {
+  vehicles: false,
+  alarms: false,
+  stats: false,
+  waybills: false,
+  drivers: false,
+  vehiclesList: false,
+  rescue: false,
+  weather: false,
+  blockchain: false,
+  serviceAreas: false,
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -368,6 +421,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   serviceAreas: [],
   stats: initialStats,
   wsConnected: false,
+  loading: initialLoading,
+  error: null,
 
   setUser: user => set({ user }),
   setToken: token => set({ token }),
@@ -465,6 +520,133 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setStats: stats => set({ stats }),
   setWsConnected: connected => set({ wsConnected: connected }),
+  setLoading: (key, value) => set(state => ({ loading: { ...state.loading, [key]: value } })),
+  setError: error => set({ error }),
+
+  fetchVehicles: async (params) => {
+    set({ loading: { ...get().loading, vehicles: true }, error: null })
+    try {
+      const data = await vehicleApi.listRealtimeStatus(params)
+      set({ vehicles: data || [], loading: { ...get().loading, vehicles: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取车辆状态失败', loading: { ...get().loading, vehicles: false } })
+      throw e
+    }
+  },
+
+  fetchAlarms: async (params) => {
+    set({ loading: { ...get().loading, alarms: true }, error: null })
+    try {
+      const data = await fatigueApi.listAlarms(params)
+      set({
+        alarms: data?.list || [],
+        unreadAlarmCount: data?.list?.filter(a => a.status === 'pending').length || 0,
+        loading: { ...get().loading, alarms: false },
+      })
+    } catch (e: any) {
+      set({ error: e.message || '获取报警列表失败', loading: { ...get().loading, alarms: false } })
+      throw e
+    }
+  },
+
+  fetchStats: async () => {
+    set({ loading: { ...get().loading, stats: true }, error: null })
+    try {
+      const data = await monitorApi.getDashboardStats()
+      set({ stats: data || initialStats, loading: { ...get().loading, stats: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取统计数据失败', loading: { ...get().loading, stats: false } })
+      throw e
+    }
+  },
+
+  fetchWaybills: async (params) => {
+    set({ loading: { ...get().loading, waybills: true }, error: null })
+    try {
+      const data = await waybillApi.list(params)
+      set({ waybillList: data?.list || [], loading: { ...get().loading, waybills: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取运单列表失败', loading: { ...get().loading, waybills: false } })
+      throw e
+    }
+  },
+
+  fetchDrivers: async (params) => {
+    set({ loading: { ...get().loading, drivers: true }, error: null })
+    try {
+      const data = await driverApi.list(params)
+      set({ driverList: data?.list || [], loading: { ...get().loading, drivers: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取驾驶员列表失败', loading: { ...get().loading, drivers: false } })
+      throw e
+    }
+  },
+
+  fetchVehiclesList: async (params) => {
+    set({ loading: { ...get().loading, vehiclesList: true }, error: null })
+    try {
+      const data = await vehicleApi.list(params)
+      set({ vehicleList: data?.list || [], loading: { ...get().loading, vehiclesList: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取车辆列表失败', loading: { ...get().loading, vehiclesList: false } })
+      throw e
+    }
+  },
+
+  fetchRescueRequests: async (params) => {
+    set({ loading: { ...get().loading, rescue: true }, error: null })
+    try {
+      const data = await rescueApi.listRequests(params)
+      set({ rescueRequests: data?.list || [], loading: { ...get().loading, rescue: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取救援请求失败', loading: { ...get().loading, rescue: false } })
+      throw e
+    }
+  },
+
+  fetchWeatherWarnings: async (params) => {
+    set({ loading: { ...get().loading, weather: true }, error: null })
+    try {
+      const data = await weatherApi.listWarnings(params)
+      set({ weatherWarnings: data?.list || [], loading: { ...get().loading, weather: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取天气预警失败', loading: { ...get().loading, weather: false } })
+      throw e
+    }
+  },
+
+  fetchBlockchainBlocks: async (params) => {
+    set({ loading: { ...get().loading, blockchain: true }, error: null })
+    try {
+      const data = await blockchainApi.listBlocks(params)
+      set({ blockchainBlocks: data?.list || [], loading: { ...get().loading, blockchain: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取区块列表失败', loading: { ...get().loading, blockchain: false } })
+      throw e
+    }
+  },
+
+  fetchEvidenceRecords: async (params) => {
+    set({ loading: { ...get().loading, blockchain: true }, error: null })
+    try {
+      const data = await blockchainApi.listEvidence(params)
+      set({ evidenceRecords: data?.list || [], loading: { ...get().loading, blockchain: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取存证记录失败', loading: { ...get().loading, blockchain: false } })
+      throw e
+    }
+  },
+
+  fetchServiceAreas: async (params) => {
+    set({ loading: { ...get().loading, serviceAreas: true }, error: null })
+    try {
+      const data = await routeApi.getServiceAreas(params)
+      set({ serviceAreas: data || [], loading: { ...get().loading, serviceAreas: false } })
+    } catch (e: any) {
+      set({ error: e.message || '获取服务区列表失败', loading: { ...get().loading, serviceAreas: false } })
+      throw e
+    }
+  },
 
   logout: () => {
     localStorage.removeItem('ddg_access_token')

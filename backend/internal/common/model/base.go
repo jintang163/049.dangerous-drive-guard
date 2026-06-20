@@ -32,9 +32,9 @@ type User struct {
 	AvatarURL   string   `gorm:"type:varchar(256)" json:"avatar_url"`
 	IDCard      string   `gorm:"type:varchar(32)" json:"id_card"`
 	LicenseNo   string   `gorm:"type:varchar(64)" json:"license_no"`
-	LicenseType string   `gorm:"type:varchar(20)" json:"license_type"`
-	Status      int      `gorm:"default:1;index" json:"status"`
-	LastLoginAt *time.Time `json:"last_login_at"`
+	LicenseType string      `gorm:"type:varchar(20)" json:"license_type"`
+	Status      int         `gorm:"default:1;index" json:"status"`
+	LastLoginAt *time.Time  `gorm:"index" json:"last_login_at"`
 }
 
 type UserToken struct {
@@ -90,4 +90,16 @@ type Vehicle struct {
 	InsuranceInfo  string        `gorm:"type:text" json:"insurance_info"`
 	AnnualAuditDate *time.Time   `json:"annual_audit_date"`
 	Mileage        float64       `gorm:"type:decimal(12,2);default:0" json:"mileage"`
+}
+
+func (User) TableName() string {
+	return "users"
+}
+
+func (UserToken) TableName() string {
+	return "user_tokens"
+}
+
+func (Vehicle) TableName() string {
+	return "vehicles"
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useCallback } from 'react'
 import {
   Row,
   Col,
@@ -24,6 +24,7 @@ import {
   Divider,
   Alert,
   DatePicker,
+  Spin,
 } from 'antd'
 import {
   AlertOutlined,
@@ -41,12 +42,14 @@ import {
   EnvironmentOutlined,
   ExportOutlined,
   BellOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import api from '@/services/api'
+import { fatigueApi, monitorApi } from '@/services/api'
 import { formatDateTime } from '@/utils/auth'
 import dayjs from 'dayjs'
-import { useAppStore, AlarmItem } from '@/store/app'
+import { useAppStore, AlarmItem, StatData } from '@/store/app'
+import WebSocketManager from '@/services/ws'
 
 const { Title, Text, Paragraph } = Typography
 const { Option } = Select
@@ -79,9 +82,9 @@ const alarmTypeMap: Record<string, { label: string; color: string }> = {
 }
 
 const FatigueAlarms: React.FC = () => {
-  const { alarms, addAlarm, updateAlarm } = useAppStore()
+  const { alarms, addAlarm, updateAlarm, fetchAlarms, fetchStats: fetchStoreStats, loading: storeLoading, stats: storeStats } = useAppStore()
   const [loading, setLoading] = useState(true)
-  const [data, setData] = useState<any[]>([])
+  const [data, setData] = useState<AlarmItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -91,98 +94,216 @@ const FatigueAlarms: React.FC = () => {
   const [detailDrawer, setDetailDrawer] = useState<AlarmItem | null>(null)
   const [handleModal, setHandleModal] = useState<AlarmItem | null>(null)
   const [handleForm] = Form.useForm()
-  const [stats, setStats] = useState({
-    total: 0,
-    pending: 0,
-    today: 0,
-    severe: 0,
-  })
+  const [dashboardStats, setDashboardStats] = useState<StatData | null>(null)
+  const [detailVideoURL, setDetailVideoURL] = useState<string>('')
+  const [detailSnapshotURL, setDetailSnapshotURL] = useState<string>('')
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [statsLoading, setStatsLoading] = useState(false)
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const res: any = await api.get('/fatigue/alarms', {
+      const res = await fatigueApi.listAlarms({
         page,
         page_size: pageSize,
-        status: statusFilter || '',
-        level: levelFilter || 0,
-        type: typeFilter || '',
+        status: statusFilter,
+        level: levelFilter,
+        alarm_type: typeFilter,
       })
       setData(res?.list || [])
       setTotal(res?.total || 0)
-      setStats(s => ({
-        ...s,
-        total: res?.total || 0,
-        pending: res?.list?.filter((a: any) => a.status === 'pending').length || 0,
-        severe: res?.list?.filter((a: any) => a.alarm_level === 3).length || 0,
-        today: res?.list?.filter((a: any) => dayjs(a.created_at).isSame(dayjs(), 'day')).length || 0,
-      }))
     } finally {
       setLoading(false)
     }
-  }
+  }, [page, pageSize, statusFilter, levelFilter, typeFilter])
+
+  const fetchDashboardStats = useCallback(async () => {
+    setStatsLoading(true)
+    try {
+      const data = await monitorApi.getDashboardStats()
+      setDashboardStats(data)
+    } finally {
+      setStatsLoading(false)
+    }
+  }, [])
+
+  const fetchDetailMedia = useCallback(async (alarmId: number) => {
+    setDetailLoading(true)
+    try {
+      const [videoRes, snapshotRes] = await Promise.all([
+        fatigueApi.getVideoURL(alarmId).catch(() => ({ url: '' })),
+        fatigueApi.getSnapshotURL(alarmId).catch(() => ({ url: '' })),
+      ])
+      setDetailVideoURL(videoRes?.url || '')
+      setDetailSnapshotURL(snapshotRes?.url || '')
+    } finally {
+      setDetailLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
     fetchData()
-  }, [page, pageSize, statusFilter, levelFilter, typeFilter])
+    fetchDashboardStats()
+  }, [fetchData, fetchDashboardStats])
 
-  const trendChart = {
-    tooltip: { trigger: 'axis' },
-    grid: { left: 40, right: 20, top: 20, bottom: 30 },
-    xAxis: {
-      type: 'category',
-      data: Array.from({ length: 24 }, (_, i) => `${i.toString().padStart(2, '0')}:00`),
-    },
-    yAxis: { type: 'value' },
-    series: [{
-      type: 'bar',
-      smooth: true,
-      areaStyle: { color: 'rgba(255,77,79,0.1)' },
-      itemStyle: {
-        color: {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: '#ff4d4f' },
-            { offset: 1, color: '#ffccc7' },
-          ],
+  useEffect(() => {
+    const unsub1 = WebSocketManager.getInstance().on('new_alarm', async (alarm: AlarmItem) => {
+      addAlarm(alarm)
+      try {
+        const snapshotRes = await fatigueApi.getSnapshotURL(alarm.id)
+        if (snapshotRes?.url) {
+          updateAlarm(alarm.id, { snap_image_url: snapshotRes.url })
+        }
+      } catch (e) {}
+      message.warning({
+        content: (
+          <div>
+            <div style={{ fontWeight: 600 }}>🚨 新报警：{alarm.vehicle_plate || alarm.vehicle_id}</div>
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              {alarmTypeMap[alarm.alarm_type]?.label || alarm.alarm_type} · 疲劳指数 {Math.round(alarm.fatigue_score)}
+            </div>
+          </div>
+        ),
+        duration: 8,
+      })
+    })
+
+    const unsub2 = WebSocketManager.getInstance().on('alarm_updated', (alarm: Partial<AlarmItem>) => {
+      if (alarm.id) {
+        updateAlarm(alarm.id, alarm)
+      }
+    })
+
+    return () => {
+      unsub1()
+      unsub2()
+    }
+  }, [addAlarm, updateAlarm])
+
+  const trendChart = React.useMemo(() => {
+    if (!dashboardStats?.daily_trend?.length) {
+      return {
+        tooltip: { trigger: 'axis' },
+        grid: { left: 40, right: 20, top: 20, bottom: 30 },
+        xAxis: {
+          type: 'category',
+          data: Array.from({ length: 24 }, (_, i) => `${i.toString().padStart(2, '0')}:00`),
         },
-        borderRadius: [4, 4, 0, 0],
+        yAxis: { type: 'value' },
+        series: [{
+          type: 'bar',
+          itemStyle: {
+            color: {
+              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: '#ff4d4f' },
+                { offset: 1, color: '#ffccc7' },
+              ],
+            },
+            borderRadius: [4, 4, 0, 0],
+          },
+          data: Array.from({ length: 24 }, () => 0),
+        }],
+      }
+    }
+    return {
+      tooltip: { trigger: 'axis' },
+      grid: { left: 40, right: 20, top: 20, bottom: 30 },
+      xAxis: {
+        type: 'category',
+        data: dashboardStats.daily_trend.slice().reverse().map(d => dayjs(d.date).format('HH:mm')),
       },
-      data: Array.from({ length: 24 }, () => Math.floor(Math.random() * 8) + 1),
-    }],
-  }
-
-  const distributionChart = {
-    tooltip: { trigger: 'item' },
-    legend: { bottom: 0, type: 'scroll' },
-    series: [{
-      type: 'pie',
-      radius: ['40%', '70%'],
-      avoidLabelOverlap: false,
-      itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-      label: { show: true, formatter: '{b}: {c}' },
-      data: Object.entries(alarmTypeMap).map(([k, v], i) => ({
-        name: v.label,
-        value: Math.floor(Math.random() * 20) + 2,
+      yAxis: { type: 'value' },
+      series: [{
+        type: 'bar',
         itemStyle: {
-          color: ['#ff4d4f', '#fa8c16', '#faad14', '#a0d911', '#13c2c2', '#1677ff', '#722ed1', '#eb2f96'][i % 8],
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: '#ff4d4f' },
+              { offset: 1, color: '#ffccc7' },
+            ],
+          },
+          borderRadius: [4, 4, 0, 0],
         },
-      })),
-    }],
-  }
+        data: dashboardStats.daily_trend.slice().reverse().map(d => d.alarms || 0),
+      }],
+    }
+  }, [dashboardStats])
+
+  const distributionChart = React.useMemo(() => {
+    if (!dashboardStats?.alarm_type_distribution?.length) {
+      return {
+        tooltip: { trigger: 'item' },
+        legend: { bottom: 0, type: 'scroll' },
+        series: [{
+          type: 'pie',
+          radius: ['40%', '70%'],
+          avoidLabelOverlap: false,
+          itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+          label: { show: true, formatter: '{b}: {c}' },
+          data: [],
+        }],
+      }
+    }
+    const colorMap = ['#ff4d4f', '#fa8c16', '#faad14', '#a0d911', '#13c2c2', '#1677ff', '#722ed1', '#eb2f96']
+    return {
+      tooltip: { trigger: 'item' },
+      legend: { bottom: 0, type: 'scroll' },
+      series: [{
+        type: 'pie',
+        radius: ['40%', '70%'],
+        avoidLabelOverlap: false,
+        itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+        label: { show: true, formatter: '{b}: {c}' },
+        data: dashboardStats.alarm_type_distribution.map((d, i) => ({
+          name: alarmTypeMap[d.alarm_type]?.label || d.alarm_type,
+          value: d.count,
+          itemStyle: { color: colorMap[i % colorMap.length] },
+        })),
+      }],
+    }
+  }, [dashboardStats])
 
   const handleAck = async (values: any) => {
     if (!handleModal) return
     try {
-      await api.post(`/fatigue/alarms/${handleModal.id}/ack`, {
-        handle_type: values.handle_type,
-        handle_note: values.handle_note,
+      const userInfo = localStorage.getItem('ddg_user_info')
+      const operatorId = userInfo ? JSON.parse(userInfo).id : 1
+      await fatigueApi.ackAlarm(handleModal.id, {
+        action: values.handle_type,
+        remark: values.handle_note,
+        operator_id: operatorId,
       })
       message.success('报警已处理')
       setHandleModal(null)
       handleForm.resetFields()
       fetchData()
+      fetchDashboardStats()
     } catch (e) { }
+  }
+
+  const handleOpenDetail = async (record: AlarmItem) => {
+    setDetailDrawer(record)
+    setDetailVideoURL('')
+    setDetailSnapshotURL('')
+    await fetchDetailMedia(record.id)
+  }
+
+  const handleDownloadVideo = async () => {
+    if (!detailDrawer) return
+    try {
+      const blob = await fatigueApi.downloadVideo(detailDrawer.id)
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `alarm_${detailDrawer.alarm_no}_video.mp4`
+      a.click()
+      window.URL.revokeObjectURL(url)
+      message.success('视频下载中...')
+    } catch (e) {
+      message.error('下载失败')
+    }
   }
 
   const handleBatch = (type: string) => {
@@ -279,7 +400,7 @@ const FatigueAlarms: React.FC = () => {
       fixed: 'right' as const,
       render: (_, record: AlarmItem) => (
         <Space size={4}>
-          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setDetailDrawer(record)}>详情</Button>
+          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => handleOpenDetail(record)}>详情</Button>
           {(record.status === 'pending' || record.status === 'processing') && (
             <Button type="link" size="small" type="primary" danger icon={<CheckCircleOutlined />} onClick={() => setHandleModal(record)}>处理</Button>
           )}
@@ -297,10 +418,10 @@ const FatigueAlarms: React.FC = () => {
         message={
           <Space>
             <Text strong>实时报警提醒</Text>
-            <Badge count={stats.pending} showZero style={{ backgroundColor: '#ff4d4f' }}>
-              <Tag color="red">待处理 {stats.pending} 条</Tag>
+            <Badge count={dashboardStats?.pending_alarms || 0} showZero style={{ backgroundColor: '#ff4d4f' }}>
+              <Tag color="red">待处理 {dashboardStats?.pending_alarms || 0} 条</Tag>
             </Badge>
-            <Text type="secondary">今日新增 {stats.today} 条，严重级别 {stats.severe} 条</Text>
+            <Text type="secondary">今日新增 {dashboardStats?.today_alarms || 0} 条</Text>
           </Space>
         }
         style={{ borderRadius: 12 }}
@@ -308,40 +429,40 @@ const FatigueAlarms: React.FC = () => {
 
       <Row gutter={16}>
         <Col xs={24} sm={12} md={6}>
-          <Card bordered={false} style={{ borderRadius: 12 }}>
+          <Card bordered={false} style={{ borderRadius: 12 }} loading={statsLoading}>
             <Statistic
               title="累计报警"
-              value={stats.total}
+              value={total}
               valueStyle={{ color: '#fa8c16' }}
               prefix={<AlertOutlined />}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card bordered={false} style={{ borderRadius: 12 }}>
+          <Card bordered={false} style={{ borderRadius: 12 }} loading={statsLoading}>
             <Statistic
               title="待处理"
-              value={stats.pending}
+              value={dashboardStats?.pending_alarms || 0}
               valueStyle={{ color: '#ff4d4f' }}
               prefix={<FireOutlined />}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card bordered={false} style={{ borderRadius: 12 }}>
+          <Card bordered={false} style={{ borderRadius: 12 }} loading={statsLoading}>
             <Statistic
               title="今日新增"
-              value={stats.today}
+              value={dashboardStats?.today_alarms || 0}
               valueStyle={{ color: '#722ed1' }}
               prefix={<WarningOutlined />}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
-          <Card bordered={false} style={{ borderRadius: 12 }}>
+          <Card bordered={false} style={{ borderRadius: 12 }} loading={statsLoading}>
             <Statistic
-              title="严重等级"
-              value={stats.severe}
+              title="今日疲劳事件"
+              value={dashboardStats?.today_fatigue_events || 0}
               valueStyle={{ color: '#f5222d' }}
               prefix={<SafetyCertificateOutlined />}
             />
@@ -507,11 +628,24 @@ const FatigueAlarms: React.FC = () => {
               </Descriptions>
             </Card>
 
-            <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title={<Space><VideoCameraOutlined /> 报警现场快照</Space>}>
-              <Row gutter={8}>
-                <Col span={12}>
-                  {detailDrawer.snap_image_url ? (
-                    <Image src={detailDrawer.snap_image_url} />
+            <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title={<Space><VideoCameraOutlined /> 报警现场快照</Space>} extra={
+              <Button
+                type="link"
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={handleDownloadVideo}
+                disabled={!detailVideoURL}
+              >
+                下载视频
+              </Button>
+            }>
+              {detailLoading ? (
+                <div style={{ padding: 40, textAlign: 'center' }}><Spin tip="加载中..." /></div>
+              ) : (
+                <Row gutter={8}>
+                  <Col span={12}>
+                    {detailSnapshotURL || detailDrawer.snap_image_url ? (
+                    <Image src={detailSnapshotURL || detailDrawer.snap_image_url} />
                   ) : (
                     <div style={{
                       background: '#f5f5f5',
@@ -528,8 +662,8 @@ const FatigueAlarms: React.FC = () => {
                   )}
                 </Col>
                 <Col span={12}>
-                  {detailDrawer.video_clip_url ? (
-                    <video src={detailDrawer.video_clip_url} controls style={{ width: '100%', borderRadius: 6 }} />
+                  {detailVideoURL || detailDrawer.video_clip_url ? (
+                    <video controls src={detailVideoURL || detailDrawer.video_clip_url} style={{ width: '100%', borderRadius: 6 }} />
                   ) : (
                     <div style={{
                       background: '#f5f5f5',
@@ -541,11 +675,12 @@ const FatigueAlarms: React.FC = () => {
                       color: '#8c8c8c',
                       fontSize: 12,
                     }}>
-                      <VideoCameraOutlined /> 无视频片段(前10秒)
+                      <VideoCameraOutlined /> 无视频片段
                     </div>
                   )}
                 </Col>
               </Row>
+              )}
             </Card>
 
             {detailDrawer.status !== 'pending' && (

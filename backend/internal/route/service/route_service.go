@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	routecore "github.com/dangerous-drive-guard/backend/internal/route/core"
@@ -21,167 +21,42 @@ import (
 )
 
 type RouteService struct {
-	db         *database.TIDB
-	config     *config.RouteConfig
-	graphCache *routecore.Graph
-	graphMu    sync.RWMutex
+	db           *gorm.DB
+	cfg          *config.Config
+	amapClient   *routecore.AMapTruckRouteClient
+	graphCache   *routecore.Graph
+	graphMu      sync.RWMutex
+	useAMap      bool
 }
 
 func NewRouteService(cfg *config.Config) *RouteService {
+	useAMap := cfg.Map.AMap.TruckKey != "" && cfg.Map.AMap.TruckKey != "your-amap-truck-key"
+	var amapClient *routecore.AMapTruckRouteClient
+	if useAMap {
+		amapClient = routecore.NewAMapTruckRouteClient(&cfg.Map.AMap)
+		logger.Sugar.Infof("AMap truck route service enabled")
+	} else {
+		logger.Sugar.Warnf("AMap truck key not configured, fallback to local A* algorithm")
+	}
+
 	return &RouteService{
 		db:         database.GetDB(),
+		cfg:        cfg,
+		amapClient: amapClient,
 		graphCache: routecore.NewGraph(),
+		useAMap:    useAMap,
 	}
-}
-
-func (s *RouteService) buildRoadGraph(ctx context.Context, origin, dest model.GeoPoint, restrictedAreas []*model.RestrictedArea) *routecore.Graph {
-	g := routecore.NewGraph()
-
-	originID := g.AddNode(origin, map[string]interface{}{"type": "origin"})
-	destID := g.AddNode(dest, map[string]interface{}{"type": "destination"})
-
-	centerLat := (origin.Lat + dest.Lat) / 2
-	centerLng := (origin.Lng + dest.Lng) / 2
-	latSpan := math.Abs(origin.Lat-dest.Lat) + 0.5
-	lngSpan := math.Abs(origin.Lng-dest.Lng) + 0.5
-
-	gridSize := 5
-	nodeGrid := make([][]int64, gridSize)
-	for i := 0; i < gridSize; i++ {
-		nodeGrid[i] = make([]int64, gridSize)
-		for j := 0; j < gridSize; j++ {
-			lat := centerLat + (float64(i)-float64(gridSize-1)/2) * (latSpan / float64(gridSize-1))
-			lng := centerLng + (float64(j)-float64(gridSize-1)/2) * (lngSpan / float64(gridSize-1))
-
-			point := model.GeoPoint{Lat: lat, Lng: lng}
-			data := map[string]interface{}{
-				"type":  "waypoint",
-				"grid_i": i,
-				"grid_j": j,
-			}
-			nodeGrid[i][j] = g.AddNode(point, data)
-		}
-	}
-
-	roadTypes := []string{"highway", "national", "provincial", "urban"}
-	speedLimits := map[string]int{
-		"highway": 90,
-		"national": 70,
-		"provincial": 60,
-		"urban": 50,
-	}
-	roadNames := map[string]string{
-		"highway":    "G4京港澳高速",
-		"national":   "G107国道",
-		"provincial": "S325省道",
-		"urban":      "市政道路",
-	}
-
-	rand.Seed(time.Now().UnixNano())
-
-	addRoadEdge := func(from, to int64, roadType string, addRestricted bool) {
-		fromNode := g.Nodes[from]
-		toNode := g.Nodes[to]
-		if fromNode == nil || toNode == nil {
-			return
-		}
-
-		dist := fromNode.Point.DistanceTo(toNode.Point)
-		edge := &routecore.GraphEdge{
-			Distance:   dist,
-			RoadType:   roadType,
-			RoadName:   roadNames[roadType],
-			NumLanes:   2 + rand.Intn(4),
-			SpeedLimit: speedLimits[roadType],
-			HasToll:   roadType == "highway",
-			TollFee:   0,
-		}
-
-		if roadType == "highway" {
-			edge.TollFee = dist / 1000 * 0.5
-		}
-
-		if addRestricted {
-			if rand.Float64() < 0.1 {
-				edge.HasTunnel = true
-			}
-			if rand.Float64() < 0.08 {
-				edge.HasBridge = true
-			}
-			for _, area := range restrictedAreas {
-				areaCenter := model.GeoPoint{Lat: area.CenterLatitude, Lng: area.CenterLongitude}
-				midPoint := model.GeoPoint{
-					Lat: (fromNode.Point.Lat + toNode.Point.Lat) / 2,
-					Lng: (fromNode.Point.Lng + toNode.Point.Lng) / 2,
-				}
-				if midPoint.DistanceTo(areaCenter) < area.Radius*1.5 {
-					edge.RestrictedAreaIDs = append(edge.RestrictedAreaIDs, area.ID)
-				}
-			}
-			if roadType != "highway" && rand.Float64() < 0.05 {
-				edge.HeightLimit = 3.5 + rand.Float64()*1
-				edge.WeightLimit = 20 + rand.Float64()*20
-			}
-		}
-
-		g.AddEdge(from, to, edge)
-	}
-
-	for i := 0; i < gridSize; i++ {
-		for j := 0; j < gridSize; j++ {
-			current := nodeGrid[i][j]
-			if j+1 < gridSize {
-				rt := roadTypes[rand.Intn(len(roadTypes))]
-				addRoadEdge(current, nodeGrid[i][j+1], rt, true)
-				addRoadEdge(nodeGrid[i][j+1], current, rt, true)
-			}
-			if i+1 < gridSize {
-				rt := roadTypes[rand.Intn(len(roadTypes))]
-				addRoadEdge(current, nodeGrid[i+1][j], rt, true)
-				addRoadEdge(nodeGrid[i+1][j], current, rt, true)
-			}
-			if i+1 < gridSize && j+1 < gridSize {
-				addRoadEdge(current, nodeGrid[i+1][j+1], "provincial", false)
-			}
-		}
-	}
-
-	connectOrigin := func(gridI, gridJ int, roadType string) {
-		if gridI >= 0 && gridI < gridSize && gridJ >= 0 && gridJ < gridSize {
-			addRoadEdge(originID, nodeGrid[gridI][gridJ], roadType, false)
-			addRoadEdge(nodeGrid[gridI][gridJ], originID, roadType, false)
-		}
-	}
-	connectOrigin(0, 0, "national")
-	connectOrigin(0, 1, "urban")
-	connectOrigin(1, 0, "provincial")
-
-	connectDest := func(gridI, gridJ int, roadType string) {
-		if gridI >= 0 && gridI < gridSize && gridJ >= 0 && gridJ < gridSize {
-			addRoadEdge(destID, nodeGrid[gridI][gridJ], roadType, false)
-			addRoadEdge(nodeGrid[gridI][gridJ], destID, roadType, false)
-		}
-	}
-	connectDest(gridSize-1, gridSize-1, "national")
-	connectDest(gridSize-1, gridSize-2, "urban")
-	connectDest(gridSize-2, gridSize-1, "provincial")
-
-	return g
 }
 
 func (s *RouteService) GetRestrictedAreas(ctx context.Context, hazardClass string, vehicleType model.VehicleType) ([]*model.RestrictedArea, error) {
 	var areas []*model.RestrictedArea
-	query := s.db.WithContext(ctx).Where("status = ?", 1)
-	rows, err := query.Find(&areas).Rows()
+	err := s.db.WithContext(ctx).Where("status = ?", 1).Find(&areas).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var result []*model.RestrictedArea
-	for rows.Next() {
-		var a model.RestrictedArea
-		_ = s.db.ScanRows(rows, &a)
+	for _, a := range areas {
 		if a.RestrictHazardClasses != "" && hazardClass != "" {
 			matches := false
 			for _, c := range strings.Split(a.RestrictHazardClasses, ",") {
@@ -194,7 +69,7 @@ func (s *RouteService) GetRestrictedAreas(ctx context.Context, hazardClass strin
 				continue
 			}
 		}
-		result = append(result, &a)
+		result = append(result, a)
 	}
 	return result, nil
 }
@@ -257,9 +132,8 @@ func (s *RouteService) buildPlanResult(
 				continue
 			}
 			seenAreas[areaID] = true
-			var area *model.RestrictedArea
-			_ = s.db.WithContext(ctx).First(&area, areaID).Error
-			if area == nil {
+			var area model.RestrictedArea
+			if err := s.db.WithContext(ctx).First(&area, areaID).Error; err != nil {
 				continue
 			}
 			info := model.RestrictedSegmentInfo{
@@ -270,8 +144,8 @@ func (s *RouteService) buildPlanResult(
 				EntryPoint: seg.Start,
 				ExitPoint:  seg.End,
 				Distance:   seg.Distance,
-				Reason:     s.buildRestrictionReason(area),
-				Suggestion: s.buildRestrictionSuggestion(area),
+				Reason:     s.buildRestrictionReason(&area),
+				Suggestion: s.buildRestrictionSuggestion(&area),
 			}
 			restrictedSegs = append(restrictedSegs, info)
 		}
@@ -348,16 +222,203 @@ func (s *RouteService) buildRestrictionSuggestion(area *model.RestrictedArea) st
 	}
 }
 
+func (s *RouteService) buildAMapRequest(req *model.RoutePlanRequest) *routecore.AMapTruckRouteRequest {
+	origin := fmt.Sprintf("%.6f,%.6f", req.Origin.Longitude, req.Origin.Latitude)
+	dest := fmt.Sprintf("%.6f,%.6f", req.Destination.Longitude, req.Destination.Latitude)
+
+	var waypoints string
+	if len(req.Waypoints) > 0 {
+		var parts []string
+		for _, wp := range req.Waypoints {
+			parts = append(parts, fmt.Sprintf("%.6f,%.6f", wp.Longitude, wp.Latitude))
+		}
+		waypoints = strings.Join(parts, ";")
+	}
+
+	isHazardous, hazardousType := routecore.ConvertHazardClassToAMap(req.HazardClass)
+
+	return &routecore.AMapTruckRouteRequest{
+		Origin:        origin,
+		Destination:   dest,
+		Waypoints:     waypoints,
+		Size:          5,
+		Height:        req.VehicleHeight,
+		Width:         req.VehicleWidth,
+		Length:        req.VehicleLength,
+		Weight:        req.VehicleWeight,
+		AxleWeight:    req.VehicleWeight / 3,
+		AxleCount:     3,
+		GoodsType:     4,
+		IsHazardous:   isHazardous,
+		HazardousType: hazardousType,
+		Strategy:      routecore.ConvertStrategyToAMap(req.Strategy),
+	}
+}
+
+func (s *RouteService) buildRoadGraph(ctx context.Context, origin, dest model.GeoPoint, restrictedAreas []*model.RestrictedArea) *routecore.Graph {
+	g := routecore.NewGraph()
+
+	originID := g.AddNode(origin, map[string]interface{}{"type": "origin"})
+	destID := g.AddNode(dest, map[string]interface{}{"type": "destination"})
+
+	centerLat := (origin.Lat + dest.Lat) / 2
+	centerLng := (origin.Lng + dest.Lng) / 2
+	latSpan := math.Abs(origin.Lat-dest.Lat) + 0.5
+	lngSpan := math.Abs(origin.Lng-dest.Lng) + 0.5
+
+	gridSize := 5
+	nodeGrid := make([][]int64, gridSize)
+	for i := 0; i < gridSize; i++ {
+		nodeGrid[i] = make([]int64, gridSize)
+		for j := 0; j < gridSize; j++ {
+			lat := centerLat + (float64(i)-float64(gridSize-1)/2) * (latSpan / float64(gridSize-1))
+			lng := centerLng + (float64(j)-float64(gridSize-1)/2) * (lngSpan / float64(gridSize-1))
+
+			point := model.GeoPoint{Lat: lat, Lng: lng}
+			data := map[string]interface{}{
+				"type":   "waypoint",
+				"grid_i": i,
+				"grid_j": j,
+			}
+			nodeGrid[i][j] = g.AddNode(point, data)
+		}
+	}
+
+	roadTypes := []string{"highway", "national", "provincial", "urban"}
+	speedLimits := map[string]int{
+		"highway":    90,
+		"national":   70,
+		"provincial": 60,
+		"urban":      50,
+	}
+	roadNames := map[string]string{
+		"highway":    "G4京港澳高速",
+		"national":   "G107国道",
+		"provincial": "S325省道",
+		"urban":      "市政道路",
+	}
+
+	addRoadEdge := func(from, to int64, roadType string, addRestricted bool) {
+		fromNode := g.Nodes[from]
+		toNode := g.Nodes[to]
+		if fromNode == nil || toNode == nil {
+			return
+		}
+
+		dist := fromNode.Point.DistanceTo(toNode.Point)
+		edge := &routecore.GraphEdge{
+			Distance:   dist,
+			RoadType:   roadType,
+			RoadName:   roadNames[roadType],
+			NumLanes:   2 + int(time.Now().UnixNano()%4),
+			SpeedLimit: speedLimits[roadType],
+			HasToll:    roadType == "highway",
+			TollFee:    0,
+		}
+
+		if roadType == "highway" {
+			edge.TollFee = dist / 1000 * 0.5
+		}
+
+		if addRestricted {
+			if time.Now().UnixNano()%10 == 0 {
+				edge.HasTunnel = true
+			}
+			if time.Now().UnixNano()%12 == 0 {
+				edge.HasBridge = true
+			}
+			for _, area := range restrictedAreas {
+				areaCenter := model.GeoPoint{Lat: area.CenterLatitude, Lng: area.CenterLongitude}
+				midPoint := model.GeoPoint{
+					Lat: (fromNode.Point.Lat + toNode.Point.Lat) / 2,
+					Lng: (fromNode.Point.Lng + toNode.Point.Lng) / 2,
+				}
+				if midPoint.DistanceTo(areaCenter) < area.Radius*1.5 {
+					edge.RestrictedAreaIDs = append(edge.RestrictedAreaIDs, area.ID)
+				}
+			}
+			if roadType != "highway" && time.Now().UnixNano()%20 == 0 {
+				edge.HeightLimit = 3.5 + float64(time.Now().UnixNano()%10)/10
+				edge.WeightLimit = 20 + float64(time.Now().UnixNano()%20)
+			}
+		}
+
+		g.AddEdge(from, to, edge)
+	}
+
+	for i := 0; i < gridSize; i++ {
+		for j := 0; j < gridSize; j++ {
+			current := nodeGrid[i][j]
+			if j+1 < gridSize {
+				rt := roadTypes[time.Now().UnixNano()%int64(len(roadTypes))]
+				addRoadEdge(current, nodeGrid[i][j+1], rt, true)
+				addRoadEdge(nodeGrid[i][j+1], current, rt, true)
+			}
+			if i+1 < gridSize {
+				rt := roadTypes[time.Now().UnixNano()%int64(len(roadTypes))]
+				addRoadEdge(current, nodeGrid[i+1][j], rt, true)
+				addRoadEdge(nodeGrid[i+1][j], current, rt, true)
+			}
+			if i+1 < gridSize && j+1 < gridSize {
+				addRoadEdge(current, nodeGrid[i+1][j+1], "provincial", false)
+			}
+		}
+	}
+
+	connectOrigin := func(gridI, gridJ int, roadType string) {
+		if gridI >= 0 && gridI < gridSize && gridJ >= 0 && gridJ < gridSize {
+			addRoadEdge(originID, nodeGrid[gridI][gridJ], roadType, false)
+			addRoadEdge(nodeGrid[gridI][gridJ], originID, roadType, false)
+		}
+	}
+	connectOrigin(0, 0, "national")
+	connectOrigin(0, 1, "urban")
+	connectOrigin(1, 0, "provincial")
+
+	connectDest := func(gridI, gridJ int, roadType string) {
+		if gridI >= 0 && gridI < gridSize && gridJ >= 0 && gridJ < gridSize {
+			addRoadEdge(destID, nodeGrid[gridI][gridJ], roadType, false)
+			addRoadEdge(nodeGrid[gridI][gridJ], destID, roadType, false)
+		}
+	}
+	connectDest(gridSize-1, gridSize-1, "national")
+	connectDest(gridSize-1, gridSize-2, "urban")
+	connectDest(gridSize-2, gridSize-1, "provincial")
+
+	return g
+}
+
 func (s *RouteService) PlanRoute(ctx context.Context, req *model.RoutePlanRequest) (*model.RoutePlan, error) {
 	logger.Global.Info("planning route",
 		zap.String("strategy", string(req.Strategy)),
 		zap.Float64("from_lat", req.Origin.Latitude),
 		zap.Float64("from_lng", req.Origin.Longitude),
+		zap.Bool("use_amap", s.useAMap),
 	)
 
 	restrictedAreas, err := s.GetRestrictedAreas(ctx, req.HazardClass, req.VehicleType)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get restricted areas: %w", err)
+	}
+
+	if s.useAMap && s.amapClient != nil {
+		amapReq := s.buildAMapRequest(req)
+		amapResp, err := s.amapClient.PlanRoute(ctx, amapReq)
+		if err != nil {
+			logger.Global.Warn("AMap route plan failed, fallback to local A*", zap.Error(err))
+		} else {
+			plan, err := s.amapClient.ConvertToRoutePlan(amapResp, req, req.Strategy)
+			if err != nil {
+				logger.Global.Warn("AMap convert failed, fallback to local A*", zap.Error(err))
+			} else {
+				plan.WaybillID = req.WaybillID
+				plan.VehicleID = req.VehicleID
+				plan.DriverID = req.DriverID
+				logger.Sugar.Infof("AMap route plan success: dist=%.2fkm, dur=%ds",
+					plan.TotalDistance/1000, plan.EstimatedDuration)
+				return plan, nil
+			}
+		}
 	}
 
 	origin := model.GeoPoint{Lat: req.Origin.Latitude, Lng: req.Origin.Longitude}
@@ -403,6 +464,8 @@ func (s *RouteService) PlanRoute(ctx context.Context, req *model.RoutePlanReques
 		return nil, err
 	}
 
+	logger.Sugar.Infof("A* route plan success: dist=%.2fkm, dur=%ds, safety=%.1f",
+		plan.TotalDistance/1000, plan.EstimatedDuration, plan.SafetyScore)
 	return plan, nil
 }
 
@@ -413,7 +476,7 @@ func (s *RouteService) PlanMultiStrategy(ctx context.Context, req *model.RoutePl
 	errs := make([]error, 0, 3)
 
 	strategies := []struct {
-		key  model.RouteStrategy
+		key   model.RouteStrategy
 		field **model.RoutePlan
 	}{
 		{model.StrategyShortest, &result.Shortest},
@@ -451,18 +514,13 @@ func (s *RouteService) PlanMultiStrategy(ctx context.Context, req *model.RoutePl
 
 func (s *RouteService) RecommendServiceAreas(ctx context.Context, routePlanID int64, currentPoint model.GeoPoint, fatigueLevel string) ([]*model.ServiceArea, error) {
 	var areas []*model.ServiceArea
-
-	query := s.db.WithContext(ctx).Where("status = ?", 1)
-	rows, err := query.Find(&areas).Rows()
+	err := s.db.WithContext(ctx).Where("status = ?", 1).Find(&areas).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	result := make([]*model.ServiceArea, 0)
-	for rows.Next() {
-		var a model.ServiceArea
-		_ = s.db.ScanRows(rows, &a)
+	for _, a := range areas {
 		dist := currentPoint.DistanceTo(model.GeoPoint{Lat: a.Latitude, Lng: a.Longitude})
 		a.DistanceFromCurrent = math.Round(dist/1000*100) / 100
 
@@ -472,7 +530,7 @@ func (s *RouteService) RecommendServiceAreas(ctx context.Context, routePlanID in
 		if fatigueLevel == "fatigue" && !a.HasDangerParking {
 			continue
 		}
-		result = append(result, &a)
+		result = append(result, a)
 	}
 
 	for i := range result {

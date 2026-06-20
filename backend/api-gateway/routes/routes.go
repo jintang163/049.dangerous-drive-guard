@@ -1,41 +1,57 @@
 package routes
 
 import (
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	routeHandler "github.com/dangerous-drive-guard/backend/internal/route/delivery/http"
-	"github.com/dangerous-drive-guard/backend/internal/fatigue/delivery/http"
-	fatigueWs "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
+	authHttp "github.com/dangerous-drive-guard/backend/internal/auth/delivery/http"
+	authSvc "github.com/dangerous-drive-guard/backend/internal/auth/service"
+	blockchainHttp "github.com/dangerous-drive-guard/backend/internal/blockchain/delivery/http"
+	blockchainSvc "github.com/dangerous-drive-guard/backend/internal/blockchain/service"
+	fatigueHttp "github.com/dangerous-drive-guard/backend/internal/fatigue/delivery/http"
+	fatigueSvc "github.com/dangerous-drive-guard/backend/internal/fatigue/service"
 	monitorHttp "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/http"
+	monitorWs "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
+	routeHandler "github.com/dangerous-drive-guard/backend/internal/route/delivery/http"
 	transportHandler "github.com/dangerous-drive-guard/backend/internal/transport/delivery/http"
-	vehicleHandler "github.com/dangerous-drive-guard/backend/internal/vehicle/delivery/http"
-	userHandler "github.com/dangerous-drive-guard/backend/internal/user/delivery/http"
-	authHandler "github.com/dangerous-drive-guard/backend/internal/auth/delivery/http"
+	userHttp "github.com/dangerous-drive-guard/backend/internal/user/delivery/http"
+	userSvc "github.com/dangerous-drive-guard/backend/internal/user/service"
+	vehicleHttp "github.com/dangerous-drive-guard/backend/internal/vehicle/delivery/http"
+	vehicleSvc "github.com/dangerous-drive-guard/backend/internal/vehicle/service"
+	weatherHttp "github.com/dangerous-drive-guard/backend/internal/weather/delivery/http"
+	weatherSvc "github.com/dangerous-drive-guard/backend/internal/weather/service"
+	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/middleware"
 )
 
 func Register(h *server.Hertz) {
+	authService := authSvc.NewAuthService(config.Global)
+	authHandler := authHttp.NewAuthHandler(authService)
+
+	userService := userSvc.NewUserService(config.Global)
+	userHandler := userHttp.NewUserHandler(userService)
+
+	vehicleService := vehicleSvc.NewVehicleService()
+	vehicleHandler := vehicleHttp.NewVehicleHandler(vehicleService)
+
+	videoService := fatigueSvc.NewVideoService(config.Global)
+	videoHandler := fatigueHttp.NewVideoHandler(videoService)
+
+	weatherService := weatherSvc.NewWeatherService(config.Global)
+	weatherHandler := weatherHttp.NewWeatherHandler(weatherService)
+
+	blockchainService := blockchainSvc.NewBlockchainService(config.Global)
+	blockchainHandler := blockchainHttp.NewBlockchainHandler(blockchainService)
+
 	api := h.Group("/api/v1")
 	{
-		api.Use(middleware.TraceID(), middleware.CORS())
+		api.Use(middleware.TraceID())
 
-		auth := api.Group("/auth")
-		{
-			auth.POST("/login", authHandler.Login)
-			auth.POST("/refresh", middleware.JWTAuth(), authHandler.Refresh)
-			auth.POST("/logout", middleware.JWTAuth(), authHandler.Logout)
-		}
+		authHandler.RegisterRoutes(api)
 
-		user := api.Group("/users", middleware.JWTAuth())
-		{
-			user.GET("/profile", userHandler.GetProfile)
-			user.PUT("/profile", userHandler.UpdateProfile)
-			user.GET("/:id", middleware.RoleAuth("admin", "dispatcher"), userHandler.GetByID)
-			user.GET("", middleware.RoleAuth("admin", "dispatcher"), userHandler.List)
-			user.POST("", middleware.RoleAuth("admin"), userHandler.Create)
-			user.PUT("/:id", middleware.RoleAuth("admin"), userHandler.Update)
-			user.DELETE("/:id", middleware.RoleAuth("admin"), userHandler.Delete)
-		}
+		userHandler.RegisterRoutes(api, middleware.JWTAuth())
+
+		vehicleHandler.RegisterRoutes(api, middleware.JWTAuth())
 
 		route := api.Group("/routes", middleware.JWTAuth())
 		{
@@ -49,11 +65,13 @@ func Register(h *server.Hertz) {
 
 		fatigue := api.Group("/fatigue", middleware.JWTAuth())
 		{
-			fatigue.POST("/detect", fatigueHandler.DetectFatigue)
-			fatigue.POST("/upload/frame", fatigueHandler.UploadFrame)
-			fatigue.GET("/history/:vehicle_id", fatigueHandler.GetHistory)
-			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHandler.ListAlarms)
-			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHandler.AckAlarm)
+			fatigue.POST("/detect", fatigueHttp.DetectFatigue)
+			fatigue.POST("/upload/frame", fatigueHttp.UploadFrame)
+			fatigue.GET("/history/:vehicle_id", fatigueHttp.GetHistory)
+			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.ListAlarms)
+			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.AckAlarm)
+
+			videoHandler.RegisterRoutes(fatigue, middleware.JWTAuth())
 		}
 
 		monitor := api.Group("/monitor", middleware.JWTAuth())
@@ -63,10 +81,10 @@ func Register(h *server.Hertz) {
 			monitor.GET("/statistics", monitorHttp.GetStatistics)
 			monitor.POST("/intercom/:vehicle_id", middleware.RoleAuth("admin", "dispatcher"), monitorHttp.SendVoiceIntercom)
 			monitor.POST("/dispatch/service-area", middleware.RoleAuth("admin", "dispatcher"), monitorHttp.DispatchServiceArea)
-			}
+		}
 
-		api.GET("/ws/monitor", monitorWs.MonitorWebSocket)
-		api.GET("/ws/vehicle/:vehicle_id", monitorWs.VehicleWebSocket)
+		api.GET("/ws/monitor", middleware.JWTAuth(), monitorWs.MonitorWebSocket)
+		api.GET("/ws/vehicle/:vehicle_id", middleware.JWTAuth(), monitorWs.VehicleWebSocket)
 
 		transport := api.Group("/transport", middleware.JWTAuth())
 		{
@@ -92,22 +110,8 @@ func Register(h *server.Hertz) {
 			rescue.POST("/dispatch", middleware.RoleAuth("admin", "dispatcher"), transportHandler.DispatchRescue)
 		}
 
-		vehicle := api.Group("/vehicles", middleware.JWTAuth())
-		{
-			vehicle.POST("", middleware.RoleAuth("admin"), vehicleHandler.CreateVehicle)
-			vehicle.GET("/:id", vehicleHandler.GetVehicle)
-			vehicle.GET("", vehicleHandler.ListVehicles)
-			vehicle.PUT("/:id", middleware.RoleAuth("admin"), vehicleHandler.UpdateVehicle)
-			vehicle.DELETE("/:id", middleware.RoleAuth("admin"), vehicleHandler.DeleteVehicle)
+		weatherHandler.RegisterRoutes(api, middleware.JWTAuth())
 
-			diag := vehicle.Group("/diagnostics")
-			diag.POST("/upload", vehicleHandler.UploadDiagnostics)
-			diag.GET("/:vehicle_id/recent", vehicleHandler.GetRecentDiagnostics)
-			diag.GET("/:vehicle_id/faults", vehicleHandler.GetFaultAlerts)
-
-			score := vehicle.Group("/score")
-			score.GET("/driver/:driver_id", vehicleHandler.GetDriverScore)
-			score.GET("/ranking", vehicleHandler.GetScoreRanking)
-		}
+		blockchainHandler.RegisterRoutes(api, middleware.JWTAuth())
 	}
 }
