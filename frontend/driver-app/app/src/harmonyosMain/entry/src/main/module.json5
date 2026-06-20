@@ -1,0 +1,117 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "MainAbility",
+    "deviceTypes": [
+      "phone",
+      "tablet"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "MainAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:MainAbility_desc",
+        "icon": "$media:icon",
+        "label": "$string:MainAbility_label",
+        "startWindowIcon": "$media:icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "action.system.home"
+            ]
+          }
+        ]
+      }
+    ],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.LOCATION",
+        "reason": "$string:permission_location_reason",
+        "usedScene": {
+          "abilities": [
+            "MainAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.LOCATION_IN_BACKGROUND",
+        "reason": "$string:permission_location_background_reason",
+        "usedScene": {
+          "abilities": [
+            "MainAbility"
+          ],
+          "when": "always"
+        }
+      },
+      {
+        "name": "ohos.permission.CAMERA",
+        "reason": "$string:permission_camera_reason",
+        "usedScene": {
+          "abilities": [
+            "MainAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:permission_microphone_reason",
+        "usedScene": {
+          "abilities": [
+            "MainAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.INTERNET",
+        "reason": "$string:permission_internet_reason"
+      },
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO",
+        "reason": "$string:permission_network_reason"
+      },
+      {
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:permission_approx_location_reason",
+        "usedScene": {
+          "abilities": [
+            "MainAbility"
+          ],
+          "when": "inuse"
+        }
+      },
+      {
+        "name": "ohos.permission.WRITE_USER_STORAGE",
+        "reason": "$string:permission_write_storage_reason"
+      },
+      {
+        "name": "ohos.permission.READ_USER_STORAGE",
+        "reason": "$string:permission_read_storage_reason"
+      },
+      {
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
+        "reason": "$string:permission_background_reason"
+      },
+      {
+        "name": "ohos.permission.VIBRATE",
+        "reason": "$string:permission_vibrate_reason"
+      },
+      {
+        "name": "ohos.permission.PLACE_CALL",
+        "reason": "$string:permission_call_reason"
+      }
+    ]
+  }
+}

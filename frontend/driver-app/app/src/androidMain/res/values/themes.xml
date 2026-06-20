@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.DDG" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/ddg_black</item>
+        <item name="android:navigationBarColor">@color/ddg_black</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">@color/ddg_background</item>
+        <item name="colorPrimary">@color/ddg_red</item>
+        <item name="colorPrimaryDark">@color/ddg_red_dark</item>
+        <item name="colorAccent">@color/ddg_red_light</item>
+    </style>
+
+    <style name="Theme.DDG.Splash" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/ddg_black</item>
+        <item name="android:windowBackground">@color/ddg_background</item>
+    </style>
+
+</resources>

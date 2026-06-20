@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">疲劳检测防护</string>
+    <string name="fatigue_normal">状态正常</string>
+    <string name="fatigue_warning">轻度疲劳</string>
+    <string name="fatigue_alert">中度疲劳</string>
+    <string name="fatigue_danger">重度疲劳</string>
+    <string name="tts_rest">请停车休息</string>
+    <string name="tts_fatigue">请勿疲劳驾驶</string>
+    <string name="tts_posture">请注意坐姿</string>
+    <string name="tts_gaze">请正视前方</string>
+    <string name="notification_channel_detection">疲劳检测服务</string>
+    <string name="notification_detection_running">疲劳检测运行中</string>
+    <string name="score_label">疲劳指数</string>
+    <string name="ear_label">EAR</string>
+    <string name="mar_label">MAR</string>
+    <string name="perclos_label">PERCLOS</string>
+    <string name="pitch_label">俯仰角</string>
+    <string name="yaw_label">偏航角</string>
+</resources>

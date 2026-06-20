@@ -1,0 +1,88 @@
+server:
+  name: dangerous-drive-guard
+  mode: release
+  api_port: 8888
+  grpc_port: 9999
+
+database:
+  tidb:
+    host: 127.0.0.1
+    port: 4000
+    user: root
+    password: ""
+    dbname: ddg_db
+    max_open: 200
+    max_idle: 50
+    timeout: 5s
+  redis:
+    addresses:
+      - 127.0.0.1:6379
+      - 127.0.0.1:6380
+      - 127.0.0.1:6381
+    password: ""
+    pool_size: 100
+  elasticsearch:
+    addresses:
+      - http://127.0.0.1:9200
+    username: elastic
+    password: changeme
+
+mq:
+  rocketmq:
+    name_server: 127.0.0.1:9876
+    producer_group: DDG_PRODUCER_GROUP
+    consumer_group: DDG_CONSUMER_GROUP
+    topics:
+      fatigue_alarm: DDG_FATIGUE_ALARM
+      vehicle_status: DDG_VEHICLE_STATUS
+      route_event: DDG_ROUTE_EVENT
+      waybill_event: DDG_WAYBILL_EVENT
+
+storage:
+  minio:
+    endpoint: 127.0.0.1:9000
+    access_key: minioadmin
+    secret_key: minioadmin
+    use_ssl: false
+    buckets:
+      video: ddg-video
+      image: ddg-image
+      document: ddg-document
+
+ai:
+  deepseek:
+    base_url: https://api.deepseek.com
+    api_key: sk-your-deepseek-api-key
+    timeout: 30s
+  mediapipe:
+    model_path: ./models/face_landmark.tflite
+  fatigue:
+    perclos_threshold: 0.35
+    yawn_threshold: 0.6
+    head_pitch_threshold: 30
+    fatigue_score_threshold: 70
+    continuous_fatigue_minutes: 20
+
+map:
+  amap:
+    key: your-amap-web-key
+    truck_key: your-amap-truck-key
+    ws_url: wss://wss.api.amap.com/ws
+  baidu:
+    ak: your-baidu-ak
+    sk: your-baidu-sk
+
+blockchain:
+  fabric:
+    config_path: ./blockchain/config.yaml
+    channel_id: ddgchannel
+    chaincode_name: ddgcc
+
+jwt:
+  secret: your-jwt-secret-key-change-in-production
+  expire_hours: 72
+
+log:
+  level: info
+  format: json
+  output: stdout

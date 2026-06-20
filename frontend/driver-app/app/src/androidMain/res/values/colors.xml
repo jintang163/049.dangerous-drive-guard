@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ddg_red">#FFE53935</color>
+    <color name="ddg_red_dark">#FFB71C1C</color>
+    <color name="ddg_red_light">#FFFF5252</color>
+    <color name="ddg_black">#FF121212</color>
+    <color name="ddg_dark_gray">#FF1E1E1E</color>
+    <color name="ddg_gray">#FF2C2C2C</color>
+    <color name="ddg_light_gray">#FF424242</color>
+    <color name="ddg_text_primary">#FFFFFFFF</color>
+    <color name="ddg_text_secondary">#FFB0B0B0</color>
+    <color name="ddg_text_hint">#FF757575</color>
+    <color name="ddg_success">#FF4CAF50</color>
+    <color name="ddg_warning">#FFFF9800</color>
+    <color name="ddg_info">#FF2196F3</color>
+    <color name="ddg_danger">#FFF44336</color>
+    <color name="ddg_surface">#FF1E1E1E</color>
+    <color name="ddg_background">#FF121212</color>
+</resources>

@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <TextureView
+        android:id="@+id/textureView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/overlayCard"
+        android:layout_width="260dp"
+        android:layout_height="260dp"
+        android:layout_margin="16dp"
+        app:cardBackgroundColor="@color/overlay_bg"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="0dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:strokeColor="@color/white"
+        app:strokeWidth="0.5dp">
+
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="16dp">
+
+            <ProgressBar
+                android:id="@+id/scoreProgress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="200dp"
+                android:layout_height="200dp"
+                android:indeterminate="false"
+                android:max="100"
+                android:progress="100"
+                android:progressDrawable="@drawable/circle_progress"
+                android:rotation="-90"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
+                android:id="@+id/scoreText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="48sp"
+                android:textStyle="bold"
+                app:layout_constraintBottom_toBottomOf="@id/scoreProgress"
+                app:layout_constraintEnd_toEndOf="@id/scoreProgress"
+                app:layout_constraintStart_toStartOf="@id/scoreProgress"
+                app:layout_constraintTop_toTopOf="@id/scoreProgress"
+                tools:text="100" />
+
+            <TextView
+                android:id="@+id/scoreLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/score_label"
+                android:textColor="@color/white"
+                android:textSize="14sp"
+                app:layout_constraintEnd_toEndOf="@id/scoreProgress"
+                app:layout_constraintStart_toStartOf="@id/scoreProgress"
+                app:layout_constraintTop_toBottomOf="@id/scoreProgress" />
+        </androidx.constraintlayout.widget.ConstraintLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <View
+        android:id="@+id/alarmIndicator"
+        android:layout_width="12dp"
+        android:layout_height="12dp"
+        android:layout_margin="24dp"
+        android:background="@drawable/indicator_normal"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/metricsLayout"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:background="@color/overlay_bg"
+        android:orientation="vertical"
+        android:padding="12dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <TextView
+            android:id="@+id/earText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            tools:text="EAR: 0.35" />
+
+        <TextView
+            android:id="@+id/marText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            tools:text="MAR: 0.20" />
+
+        <TextView
+            android:id="@+id/perclosText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            tools:text="PERCLOS: 0.05" />
+
+        <TextView
+            android:id="@+id/poseText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/white"
+            android:textSize="12sp"
+            tools:text="Pitch: 5° Yaw: -3°" />
+    </LinearLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

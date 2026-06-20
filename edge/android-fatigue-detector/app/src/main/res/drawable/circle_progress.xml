@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape
+            android:innerRadiusRatio="3.2"
+            android:shape="ring"
+            android:thicknessRatio="16"
+            android:useLevel="false">
+            <solid android:color="@color/progress_track" />
+        </shape>
+    </item>
+    <item>
+        <rotate
+            android:fromDegrees="0"
+            android:pivotX="50%"
+            android:pivotY="50%"
+            android:toDegrees="360">
+            <shape
+                android:innerRadiusRatio="3.2"
+                android:shape="ring"
+                android:thicknessRatio="16"
+                android:useLevel="true">
+                <solid android:color="@color/fatigue_normal" />
+            </shape>
+        </rotate>
+    </item>
+</layer-list>

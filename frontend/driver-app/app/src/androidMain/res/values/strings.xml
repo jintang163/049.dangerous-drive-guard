@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">危险品运输护航</string>
+    <string name="app_description">驾驶员安全驾驶管理系统</string>
+    <string name="login_title">驾驶员登录</string>
+    <string name="login_phone_hint">请输入手机号</string>
+    <string name="login_password_hint">请输入密码</string>
+    <string name="login_button">登录</string>
+    <string name="nav_home">首页</string>
+    <string name="nav_navigation">导航</string>
+    <string name="nav_alarm">报警</string>
+    <string name="nav_profile">我的</string>
+    <string name="sos_button">紧急求助</string>
+    <string name="sos_confirm">确认求助</string>
+    <string name="sos_cancel">取消</string>
+    <string name="logout_button">退出登录</string>
+    <string name="logout_confirm">确认退出登录吗？</string>
+    <string name="permission_location_rationale">需要位置权限用于导航和轨迹追踪</string>
+    <string name="permission_camera_rationale">需要相机权限用于驾驶员疲劳状态监测</string>
+    <string name="permission_audio_rationale">需要麦克风权限用于语音交互</string>
+</resources>
