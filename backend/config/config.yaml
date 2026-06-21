@@ -37,6 +37,7 @@ mq:
       vehicle_status: DDG_VEHICLE_STATUS
       route_event: DDG_ROUTE_EVENT
       waybill_event: DDG_WAYBILL_EVENT
+      restricted_area_change: DDG_RESTRICTED_AREA_CHANGE
 
 storage:
   minio:

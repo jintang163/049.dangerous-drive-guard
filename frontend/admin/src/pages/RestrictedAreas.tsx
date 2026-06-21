@@ -389,53 +389,66 @@ const RestrictedAreas: React.FC = () => {
     })
   }
 
+  const [gisSourceType, setGisSourceType] = useState<string>('geojson')
+  const [gisFileList, setGisFileList] = useState<any[]>([])
+  const [gisImporting, setGisImporting] = useState(false)
+
   const handleGisImport = () => {
     Modal.confirm({
       title: '导入官方危险品运输禁行路网',
+      width: 520,
       content: (
-        <div>
-          <p style={{ marginBottom: 8 }}>选择GIS数据源类型：</p>
+        <div style={{ marginTop: 12 }}>
+          <p style={{ marginBottom: 8, color: '#595959' }}>选择GIS数据源类型：</p>
           <Select
-            id="gis_source_type"
-            defaultValue="official_road_network"
+            value={gisSourceType}
+            onChange={setGisSourceType}
             style={{ width: '100%', marginBottom: 12 }}
           >
-            <Option value="official_road_network">官方危险品禁行路网</Option>
-            <Option value="shp">Shapefile数据</Option>
             <Option value="geojson">GeoJSON数据</Option>
+            <Option value="shp">Shapefile数据（ZIP压缩包）</Option>
+            <Option value="official_road_network">官方危险品禁行路网</Option>
           </Select>
           <Upload
-            id="gis_file"
-            beforeUpload={() => false}
+            beforeUpload={(file) => {
+              setGisFileList([file])
+              return false
+            }}
+            onRemove={() => { setGisFileList([]) }}
             maxCount={1}
-            accept=".geojson,.json,.shp"
+            accept={gisSourceType === 'shp' ? '.zip' : '.geojson,.json'}
+            fileList={gisFileList}
           >
             <Button icon={<UploadOutlined />}>选择GIS数据文件</Button>
           </Upload>
+          {gisSourceType === 'shp' && (
+            <p style={{ marginTop: 8, fontSize: 12, color: '#8c8c8c' }}>
+              Shapefile需以ZIP压缩包形式上传（含.shp/.dbf/.shx），建议先通过ogr2ogr转换为GeoJSON
+            </p>
+          )}
+          <p style={{ marginTop: 8, fontSize: 12, color: '#fa8c16' }}>
+            ⚠️ 导入的区域需经二级审批后方可生效
+          </p>
         </div>
       ),
+      okText: '开始导入',
+      confirmLoading: gisImporting,
       onOk: async () => {
+        if (gisFileList.length === 0) {
+          message.warning('请先选择GIS数据文件')
+          return Promise.reject()
+        }
+        setGisImporting(true)
         try {
-          const sourceType = (document.getElementById('gis_source_type') as HTMLSelectElement)?.value || 'official_road_network'
-          const sampleFeatures = [
-            {
-              type: 'Feature',
-              properties: { name: '示例导入区域1', area_type: 'height_limit' },
-              geometry: {
-                type: 'Polygon',
-                coordinates: [[[116.42, 39.92], [116.44, 39.92], [116.44, 39.94], [116.42, 39.94], [116.42, 39.92]]],
-              },
-            },
-          ]
-          await restrictedAreaApi.importGis({
-            source_type: sourceType,
-            file_name: 'official_network.geojson',
-            features: sampleFeatures,
-          })
-          message.success('GIS数据导入成功')
+          await restrictedAreaApi.importGisFile(gisFileList[0] as any, gisSourceType)
+          message.success('GIS数据导入成功，已创建待审批禁行区域')
+          setGisFileList([])
           fetchList()
-        } catch (e) {
-          message.error('导入失败')
+        } catch (e: any) {
+          message.error(e?.message || '导入失败')
+          return Promise.reject()
+        } finally {
+          setGisImporting(false)
         }
       },
     })

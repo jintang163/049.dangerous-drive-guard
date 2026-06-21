@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,14 +50,29 @@ func NewRouteService(cfg *config.Config) *RouteService {
 }
 
 func (s *RouteService) GetRestrictedAreas(ctx context.Context, hazardClass string, vehicleType model.VehicleType) ([]*model.RestrictedArea, error) {
-	var areas []*model.RestrictedArea
-	err := s.db.WithContext(ctx).Where("status = ?", 1).Find(&areas).Error
+	var areas []*model.RestrictedAreaExt
+	err := s.db.WithContext(ctx).
+		Where("approval_status = ?", model.ApprovalApproved).
+		Where("status = ?", 1).
+		Find(&areas).Error
 	if err != nil {
 		return nil, err
 	}
 
+	now := time.Now()
 	var result []*model.RestrictedArea
 	for _, a := range areas {
+		if a.EffectiveFrom != nil && now.Before(*a.EffectiveFrom) {
+			continue
+		}
+		if a.EffectiveTo != nil && now.After(*a.EffectiveTo) {
+			continue
+		}
+
+		if !s.isTimeScheduleActive(a.TimeSchedule, now) {
+			continue
+		}
+
 		if a.RestrictHazardClasses != "" && hazardClass != "" {
 			matches := false
 			for _, c := range strings.Split(a.RestrictHazardClasses, ",") {
@@ -69,9 +85,77 @@ func (s *RouteService) GetRestrictedAreas(ctx context.Context, hazardClass strin
 				continue
 			}
 		}
-		result = append(result, a)
+		result = append(result, &a.RestrictedArea)
 	}
 	return result, nil
+}
+
+func (s *RouteService) isTimeScheduleActive(scheduleJSON model.JSON, now time.Time) bool {
+	if len(scheduleJSON) == 0 || string(scheduleJSON) == "null" || string(scheduleJSON) == "[]" {
+		return true
+	}
+
+	var rules []model.TimeScheduleRule
+	if err := json.Unmarshal(scheduleJSON, &rules); err != nil {
+		return true
+	}
+
+	if len(rules) == 0 {
+		return true
+	}
+
+	for _, rule := range rules {
+		if len(rule.Weekdays) == 0 {
+			if s.matchTimeRange(rule.StartTime, rule.EndTime, now) {
+				return true
+			}
+			continue
+		}
+
+		weekday := int(now.Weekday())
+		if weekday == 0 {
+			weekday = 7
+		}
+		for _, wd := range rule.Weekdays {
+			if wd == weekday && s.matchTimeRange(rule.StartTime, rule.EndTime, now) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (s *RouteService) matchTimeRange(startTime, endTime string, now time.Time) bool {
+	if startTime == "" && endTime == "" {
+		return true
+	}
+
+	currentMinutes := now.Hour()*60 + now.Minute()
+	startMinutes := s.parseTimeToMinutes(startTime)
+	endMinutes := s.parseTimeToMinutes(endTime)
+
+	if startMinutes < 0 || endMinutes < 0 {
+		return true
+	}
+
+	if startMinutes <= endMinutes {
+		return currentMinutes >= startMinutes && currentMinutes <= endMinutes
+	}
+	return currentMinutes >= startMinutes || currentMinutes <= endMinutes
+}
+
+func (s *RouteService) parseTimeToMinutes(t string) int {
+	parts := strings.Split(t, ":")
+	if len(parts) < 2 {
+		return -1
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return -1
+	}
+	return h*60 + m
 }
 
 func (s *RouteService) buildPlanResult(

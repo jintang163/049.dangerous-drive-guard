@@ -490,9 +490,21 @@ export const restrictedAreaApi = {
     api.post<RestrictedAreaItem>(`/restricted-areas/templates/${templateId}/apply`, data),
 
   importGis: (data: { source_type: string; file_name?: string; features: any }) =>
-    api.post<GisImportRecord>('/restricted-areas/gis/import', data),
+    api.post<GisImportRecord>('/restricted-areas/gis/import-json', data),
+  importGisFile: (file: File, sourceType: string, onProgress?: (p: number) => void) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('source_type', sourceType)
+    return api.post<GisImportRecord>('/restricted-areas/gis/import', formData, {
+      onUploadProgress: (e) => onProgress?.(e.total ? Math.round((e.loaded / e.total) * 100) : 0),
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
   listGisImports: (params?: PageParams) =>
     api.getPage<GisImportRecord>('/restricted-areas/gis/imports', params),
+
+  pullActiveAreas: (params?: { since_version?: number; hazard_class?: string }) =>
+    api.get<{ list: RestrictedAreaItem[]; total: number; latest_version: number }>('/restricted-areas/sync/pull', params),
 }
 
 export const minioApi = {

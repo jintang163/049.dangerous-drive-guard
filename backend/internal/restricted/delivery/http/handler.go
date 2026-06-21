@@ -10,7 +10,6 @@ import (
 	restrictedSvc "github.com/dangerous-drive-guard/backend/internal/restricted/service"
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
-
 var restrictedService *restrictedSvc.RestrictedAreaService
 
 func initService() {
@@ -393,4 +392,43 @@ func ListGisImports(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response.Page(c, list, total, page, pageSize)
+}
+
+func PullActiveAreas(ctx context.Context, c *app.RequestContext) {
+	initService()
+	var sinceVersion int64
+	if sv := c.Query("since_version"); sv != "" {
+		sinceVersion, _ = strconv.ParseInt(sv, 10, 64)
+	}
+	hazardClass := c.Query("hazard_class")
+
+	list, latestVersion, err := restrictedService.PullActiveAreas(ctx, sinceVersion, hazardClass)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, map[string]interface{}{
+		"list":           list,
+		"total":          len(list),
+		"latest_version": latestVersion,
+	})
+}
+
+func ImportGisFile(ctx context.Context, c *app.RequestContext) {
+	initService()
+	file, err := c.FormFile("file")
+	if err != nil {
+		response.BadRequest(c, "请上传GIS数据文件")
+		return
+	}
+
+	sourceType := c.DefaultPostForm("source_type", "geojson")
+	userID := getUserID(c)
+
+	record, err := restrictedService.ImportGisFile(ctx, file, sourceType, userID)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, record)
 }

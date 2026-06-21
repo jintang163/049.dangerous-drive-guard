@@ -35,6 +35,7 @@ const (
 	MsgWaybillUpdate    MessageType = "waybill_update"
 	MsgWeatherAlert     MessageType = "weather_alert"
 	MsgHeartbeat        MessageType = "heartbeat"
+	MsgRestrictedAreaUpdate MessageType = "restricted_area_update"
 	MsgSubscribe        MessageType = "subscribe"
 	MsgError            MessageType = "error"
 )
@@ -243,6 +244,54 @@ func (h *Hub) DispatchCommand(vehicleID int64, cmdType string, payload map[strin
 		},
 	}
 	h.sendToVehicle(vehicleID, msg)
+}
+
+type RestrictedAreaSyncPayload struct {
+	Event     string      `json:"event"`
+	AreaID    int64       `json:"area_id"`
+	AreaName  string      `json:"area_name"`
+	AreaType  string      `json:"area_type"`
+	Level     int         `json:"level"`
+	ShapeType string      `json:"shape_type"`
+	Geometry  interface{} `json:"geometry,omitempty"`
+	Schedule  interface{} `json:"schedule,omitempty"`
+	Version   int64       `json:"version"`
+}
+
+func (h *Hub) BroadcastRestrictedAreaUpdate(event string, areaID int64, areaName, areaType string, level int, shapeType string, geometry interface{}, schedule interface{}, version int64) {
+	payload := RestrictedAreaSyncPayload{
+		Event:     event,
+		AreaID:    areaID,
+		AreaName:  areaName,
+		AreaType:  areaType,
+		Level:     level,
+		ShapeType: shapeType,
+		Geometry:  geometry,
+		Schedule:  schedule,
+		Version:   version,
+	}
+	msg := &WSMessage{
+		Type:      MsgRestrictedAreaUpdate,
+		Timestamp: time.Now().Unix(),
+		Data:      payload,
+	}
+	h.broadcast <- msg
+	h.sendToAllVehicles(msg)
+}
+
+func (h *Hub) sendToAllVehicles(msg *WSMessage) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	data, _ := json.Marshal(msg)
+	for vid, clients := range h.vehicleClients {
+		_ = vid
+		for _, client := range clients {
+			select {
+			case client.Send <- data:
+			default:
+			}
+		}
+	}
 }
 
 func (c *Client) writePump() {

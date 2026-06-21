@@ -131,6 +131,8 @@ func Register(h *server.Hertz) {
 			restricted.GET("/:id/approvals", restrictedHttp.GetApprovalHistory)
 			restricted.GET("/approvals/pending", middleware.RoleAuth("admin", "dispatcher"), restrictedHttp.ListPendingApprovals)
 
+			restricted.GET("/sync/pull", restrictedHttp.PullActiveAreas)
+
 			templates := restricted.Group("/templates")
 			{
 				templates.GET("", restrictedHttp.ListTemplates)
@@ -143,7 +145,8 @@ func Register(h *server.Hertz) {
 
 			gis := restricted.Group("/gis", middleware.RoleAuth("admin"))
 			{
-				gis.POST("/import", restrictedHttp.ImportGisData)
+				gis.POST("/import", restrictedHttp.ImportGisFile)
+				gis.POST("/import-json", restrictedHttp.ImportGisData)
 				gis.GET("/imports", restrictedHttp.ListGisImports)
 			}
 		}

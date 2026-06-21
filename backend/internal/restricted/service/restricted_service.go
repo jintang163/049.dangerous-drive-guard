@@ -1,19 +1,26 @@
 package service
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"strings"
 	"time"
 
+	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
+	monitorWs "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
+	"github.com/dangerous-drive-guard/backend/pkg/mq"
 )
 
 type RestrictedAreaService struct {
@@ -387,9 +394,100 @@ func (s *RestrictedAreaService) recordApproval(ctx context.Context, areaID int64
 }
 
 func (s *RestrictedAreaService) notifyNavigationUpdate(ctx context.Context, areaID int64) {
-	logger.Global.Info("Notifying navigation system of restricted area update",
+	var area model.RestrictedAreaExt
+	if err := s.db.WithContext(ctx).First(&area, areaID).Error; err != nil {
+		logger.Sugar.Errorf("notifyNavigationUpdate: area not found: id=%d, err=%v", areaID, err)
+		return
+	}
+
+	event := "activated"
+	if area.ApprovalStatus == model.ApprovalRevoked || area.Status == 0 {
+		event = "deactivated"
+	}
+
+	version := time.Now().UnixMilli()
+
+	hub := monitorWs.GetHub()
+	hub.BroadcastRestrictedAreaUpdate(
+		event,
+		area.ID,
+		area.Name,
+		string(area.AreaType),
+		area.Level,
+		string(area.ShapeType),
+		json.RawMessage(area.BoundaryPolygon),
+		json.RawMessage(area.TimeSchedule),
+		version,
+	)
+
+	syncMsg := map[string]interface{}{
+		"event":       event,
+		"area_id":     area.ID,
+		"area_name":   area.Name,
+		"area_type":   string(area.AreaType),
+		"shape_type":  string(area.ShapeType),
+		"level":       area.Level,
+		"version":     version,
+		"updated_at":  time.Now().Format(time.RFC3339),
+	}
+	msgBody, _ := json.Marshal(syncMsg)
+	if err := mq.Send(ctx, mq.Message{
+		Topic: "restricted_area_change",
+		Tag:   event,
+		Key:   fmt.Sprintf("area_%d", areaID),
+		Body:  msgBody,
+	}); err != nil {
+		logger.Sugar.Warnf("notifyNavigationUpdate: mq send failed: err=%v", err)
+	}
+
+	if err := s.updateSyncVersion(ctx, areaID, version); err != nil {
+		logger.Sugar.Warnf("notifyNavigationUpdate: update sync version failed: err=%v", err)
+	}
+
+	logger.Global.Info("Navigation sync dispatched",
 		zap.Int64("area_id", areaID),
-		zap.String("event", "restricted_area_changed"))
+		zap.String("event", event),
+		zap.Int64("version", version))
+}
+
+func (s *RestrictedAreaService) updateSyncVersion(ctx context.Context, areaID, version int64) error {
+	return s.db.WithContext(ctx).Model(&model.RestrictedAreaExt{}).
+		Where("id = ?", areaID).
+		Update("updated_at", time.Now()).Error
+}
+
+func (s *RestrictedAreaService) PullActiveAreas(ctx context.Context, sinceVersion int64, hazardClass string) ([]*model.RestrictedAreaExt, int64, error) {
+	var list []*model.RestrictedAreaExt
+	sinceTime := time.UnixMilli(sinceVersion)
+
+	query := s.db.WithContext(ctx).Model(&model.RestrictedAreaExt{}).
+		Where("approval_status = ?", model.ApprovalApproved).
+		Where("status = ?", 1)
+
+	if sinceVersion > 0 {
+		query = query.Where("updated_at > ?", sinceTime)
+	}
+
+	if hazardClass != "" {
+		query = query.Where("restrict_hazard_classes = '' OR restrict_hazard_classes LIKE ?", "%"+hazardClass+"%")
+	}
+
+	if err := query.Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var maxVersion int64
+	for _, area := range list {
+		v := area.UpdatedAt.UnixMilli()
+		if v > maxVersion {
+			maxVersion = v
+		}
+	}
+	if maxVersion == 0 {
+		maxVersion = time.Now().UnixMilli()
+	}
+
+	return list, maxVersion, nil
 }
 
 func (s *RestrictedAreaService) ListTemplates(ctx context.Context, category string, page, pageSize int) ([]*model.RestrictedAreaTemplate, int64, error) {
@@ -621,9 +719,159 @@ func (s *RestrictedAreaService) ImportGisData(ctx context.Context, req *model.Gi
 	return record, nil
 }
 
+func (s *RestrictedAreaService) ImportGisFile(ctx context.Context, file *app.FormFile, sourceType string, userID int64) (*model.GisImportRecord, error) {
+	if file == nil {
+		return nil, fmt.Errorf("文件不能为空")
+	}
+
+	maxSize := int64(50 * 1024 * 1024)
+	if file.Size > maxSize {
+		return nil, fmt.Errorf("文件大小超过50MB限制")
+	}
+
+	f, err := file.Open()
+	if err != nil {
+		return nil, fmt.Errorf("无法读取文件: %w", err)
+	}
+	defer f.Close()
+
+	fileBytes, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("读取文件内容失败: %w", err)
+	}
+
+	fileName := file.Filename
+	var features []map[string]interface{}
+
+	switch {
+	case strings.HasSuffix(strings.ToLower(fileName), ".geojson"),
+		strings.HasSuffix(strings.ToLower(fileName), ".json"):
+		features, err = s.parseGeoJSONFile(fileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("解析GeoJSON文件失败: %w", err)
+		}
+		if sourceType == "" {
+			sourceType = "geojson"
+		}
+
+	case strings.HasSuffix(strings.ToLower(fileName), ".zip"):
+		features, err = s.parseShapefileZip(fileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("解析Shapefile压缩包失败: %w", err)
+		}
+		if sourceType == "" {
+			sourceType = "shp"
+		}
+
+	default:
+		if strings.EqualFold(sourceType, "shp") {
+			return nil, fmt.Errorf("Shapefile需以ZIP压缩包形式上传（含.shp/.dbf/.shx文件）")
+		}
+		features, err = s.parseGeoJSONFile(fileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("不支持的文件格式，请上传.geojson或.zip文件: %w", err)
+		}
+	}
+
+	if len(features) == 0 {
+		return nil, fmt.Errorf("未解析到有效的GIS要素数据")
+	}
+
+	req := &model.GisImportRequest{
+		SourceType: sourceType,
+		FileName:   fileName,
+	}
+	featuresJSON, _ := json.Marshal(features)
+	req.Features = model.JSON(featuresJSON)
+
+	return s.ImportGisData(ctx, req, userID)
+}
+
+func (s *RestrictedAreaService) parseGeoJSONFile(data []byte) ([]map[string]interface{}, error) {
+	var geojson struct {
+		Type     string                   `json:"type"`
+		Features []map[string]interface{} `json:"features"`
+	}
+	if err := json.Unmarshal(data, &geojson); err != nil {
+		return nil, fmt.Errorf("JSON格式错误: %w", err)
+	}
+
+	if geojson.Type == "FeatureCollection" && len(geojson.Features) > 0 {
+		return geojson.Features, nil
+	}
+
+	if geojson.Type == "Feature" {
+		var feat map[string]interface{}
+		if err := json.Unmarshal(data, &feat); err != nil {
+			return nil, err
+		}
+		return []map[string]interface{}{feat}, nil
+	}
+
+	var features []map[string]interface{}
+	if err := json.Unmarshal(data, &features); err != nil {
+		return nil, fmt.Errorf("无法识别的GeoJSON结构，需FeatureCollection或Feature数组")
+	}
+	return features, nil
+}
+
+func (s *RestrictedAreaService) parseShapefileZip(data []byte) ([]map[string]interface{}, error) {
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("ZIP解压失败: %w", err)
+	}
+
+	var geojsonFile *zip.File
+	for _, f := range r.File {
+		name := strings.ToLower(f.Name)
+		if strings.HasSuffix(name, ".geojson") || strings.HasSuffix(name, ".json") {
+			geojsonFile = f
+			break
+		}
+	}
+
+	if geojsonFile != nil {
+		rc, err := geojsonFile.Open()
+		if err != nil {
+			return nil, fmt.Errorf("读取ZIP内GeoJSON文件失败: %w", err)
+		}
+		defer rc.Close()
+		jsonBytes, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("读取ZIP内文件内容失败: %w", err)
+		}
+		return s.parseGeoJSONFile(jsonBytes)
+	}
+
+	var shpExists, dbfExists bool
+	for _, f := range r.File {
+		name := strings.ToLower(f.Name)
+		if strings.HasSuffix(name, ".shp") {
+			shpExists = true
+		}
+		if strings.HasSuffix(name, ".dbf") {
+			dbfExists = true
+		}
+	}
+	if !shpExists || !dbfExists {
+		return nil, fmt.Errorf("ZIP压缩包中缺少必需的Shapefile组件（需包含.shp和.dbf文件），建议将Shapefile通过ogr2ogr转换为GeoJSON后打包上传")
+	}
+
+	return nil, fmt.Errorf("原生Shapefile(.shp)二进制解析暂不支持，请使用ogr2ogr将Shapefile转换为GeoJSON格式后上传，命令: ogr2ogr -f GeoJSON output.geojson input.shp")
+}
+
 func (s *RestrictedAreaService) parseGisFeature(feat map[string]interface{}, batchNo string, userID int64) (*model.RestrictedAreaExt, error) {
 	props, _ := feat["properties"].(map[string]interface{})
 	geom, _ := feat["geometry"].(map[string]interface{})
+
+	if geom == nil {
+		return nil, fmt.Errorf("缺少geometry字段")
+	}
+
+	geomType, _ := geom["type"].(string)
+	if geomType != "Polygon" && geomType != "MultiPolygon" {
+		return nil, fmt.Errorf("不支持的几何类型: %s，仅支持Polygon和MultiPolygon", geomType)
+	}
 
 	name := "GIS导入区域"
 	if n, ok := props["name"].(string); ok && n != "" {
@@ -633,6 +881,11 @@ func (s *RestrictedAreaService) parseGisFeature(feat map[string]interface{}, bat
 	areaType := model.AreaTypeMall
 	if t, ok := props["area_type"].(string); ok && t != "" {
 		areaType = model.RestrictedAreaType(t)
+	}
+
+	var level int = 2
+	if l, ok := props["level"].(float64); ok {
+		level = int(l)
 	}
 
 	geomJSON, _ := json.Marshal(geom)
@@ -647,21 +900,32 @@ func (s *RestrictedAreaService) parseGisFeature(feat map[string]interface{}, bat
 		}
 	}
 
+	var restrictHazardClasses string
+	if rhc, ok := props["restrict_hazard_classes"].(string); ok {
+		restrictHazardClasses = rhc
+	}
+	var restrictVehicleTypes string
+	if rvt, ok := props["restrict_vehicle_types"].(string); ok {
+		restrictVehicleTypes = rvt
+	}
+
 	return &model.RestrictedAreaExt{
 		RestrictedArea: model.RestrictedArea{
-			Name:            name,
-			AreaType:        areaType,
-			Level:           2,
-			BoundaryPolygon: model.JSON(geomJSON),
-			CenterLatitude:  centerLat,
-			CenterLongitude: centerLng,
-			Source:          "official",
-			Status:          1,
+			Name:                  name,
+			AreaType:              areaType,
+			Level:                 level,
+			BoundaryPolygon:       model.JSON(geomJSON),
+			CenterLatitude:        centerLat,
+			CenterLongitude:       centerLng,
+			Source:                "official",
+			Status:                0,
+			RestrictHazardClasses: restrictHazardClasses,
+			RestrictVehicleTypes:  restrictVehicleTypes,
 		},
 		ShapeType:      model.ShapePolygon,
 		GisImportID:    batchNo,
 		CreatedBy:      userID,
-		ApprovalStatus: model.ApprovalApproved,
+		ApprovalStatus: model.ApprovalPending,
 	}, nil
 }
 
@@ -685,18 +949,14 @@ func (s *RestrictedAreaService) ListGisImports(ctx context.Context, page, pageSi
 func generateCirclePolygon(lat, lng, radius float64) model.JSON {
 	points := make([][]float64, 0)
 	sides := 36
+	latRad := lat * 3.141592653589793 / 180.0
+	mPerDegLat := 110540.0
+	mPerDegLng := 111320.0 * math.Cos(latRad)
 	for i := 0; i < sides; i++ {
-		angle := float64(i) * (2 * 3.141592653589793 / float64(sides))
-		dx := radius * 0.0000089 * float64(1) / (1 / 111320.0 * 1)
-		dy := radius * 0.0000089
-		x := lng + dx*float64(1)/111320.0*float64(1)/float64(1)
-		_ = x
-		rlat := lat + dy*float64(1)/110540.0*float64(1)
-		rlng := lng + dx*float64(1)/(111320.0*float64(1))
-		_ = rlat
-		_ = rlng
-		_ = angle
-		points = append(points, []float64{lng, lat})
+		angle := float64(i) * (2 * math.Pi / float64(sides))
+		dLat := (radius * math.Cos(angle)) / mPerDegLat
+		dLng := (radius * math.Sin(angle)) / mPerDegLng
+		points = append(points, []float64{lng + dLng, lat + dLat})
 	}
 	points = append(points, points[0])
 
