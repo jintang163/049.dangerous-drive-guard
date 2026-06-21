@@ -26,18 +26,22 @@ var upgrader = hzws.NewHertzUpgrader(func(c *hzws.Upgrader) {
 type MessageType string
 
 const (
-	MsgVehicleStatus    MessageType = "vehicle_status"
-	MsgAlarmNotify      MessageType = "alarm_notify"
-	MsgVehicleTrack     MessageType = "vehicle_track"
-	MsgDriverFatigue    MessageType = "driver_fatigue"
-	MsgIntercomMessage  MessageType = "intercom_message"
-	MsgDispatchCommand  MessageType = "dispatch_command"
-	MsgWaybillUpdate    MessageType = "waybill_update"
-	MsgWeatherAlert     MessageType = "weather_alert"
-	MsgHeartbeat        MessageType = "heartbeat"
+	MsgVehicleStatus        MessageType = "vehicle_status"
+	MsgAlarmNotify          MessageType = "alarm_notify"
+	MsgVehicleTrack         MessageType = "vehicle_track"
+	MsgDriverFatigue        MessageType = "driver_fatigue"
+	MsgIntercomMessage      MessageType = "intercom_message"
+	MsgDispatchCommand      MessageType = "dispatch_command"
+	MsgWaybillUpdate        MessageType = "waybill_update"
+	MsgWeatherAlert         MessageType = "weather_alert"
+	MsgHeartbeat            MessageType = "heartbeat"
 	MsgRestrictedAreaUpdate MessageType = "restricted_area_update"
-	MsgSubscribe        MessageType = "subscribe"
-	MsgError            MessageType = "error"
+	MsgTrafficEvent         MessageType = "traffic_event"
+	MsgRouteReplanSuggest   MessageType = "route_replan_suggest"
+	MsgRouteReplanConfirmed MessageType = "route_replan_confirmed"
+	MsgRouteApplied         MessageType = "route_applied"
+	MsgSubscribe            MessageType = "subscribe"
+	MsgError                MessageType = "error"
 )
 
 type WSMessage struct {
@@ -499,4 +503,69 @@ func parseID(s string) int64 {
 		}
 	}
 	return id
+}
+
+func (h *Hub) BroadcastReplanSuggestion(vehicleID, driverID int64, payload map[string]interface{}) {
+	msg := &WSMessage{
+		Type:      MsgRouteReplanSuggest,
+		Timestamp: time.Now().Unix(),
+		Data:      payload,
+	}
+	data, _ := json.Marshal(msg)
+
+	if vehicleID > 0 {
+		h.sendToVehicle(vehicleID, msg)
+	}
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			select {
+			case client.Send <- data:
+			default:
+			}
+		}
+	}
+	h.mu.RUnlock()
+}
+
+func (h *Hub) NotifyRouteApplied(vehicleID, driverID int64, payload map[string]interface{}) {
+	msg := &WSMessage{
+		Type:      MsgRouteApplied,
+		Timestamp: time.Now().Unix(),
+		Data:      payload,
+	}
+	if vehicleID > 0 {
+		h.sendToVehicle(vehicleID, msg)
+	}
+	data, _ := json.Marshal(msg)
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			select {
+			case client.Send <- data:
+			default:
+			}
+		}
+	}
+	h.mu.RUnlock()
+}
+
+func (h *Hub) BroadcastTrafficEvent(evt *model.TrafficEvent) {
+	msg := &WSMessage{
+		Type:      MsgTrafficEvent,
+		Timestamp: time.Now().Unix(),
+		Data:      evt,
+	}
+	data, _ := json.Marshal(msg)
+	h.broadcast <- data
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			select {
+			case client.Send <- data:
+			default:
+			}
+		}
+	}
+	h.mu.RUnlock()
 }

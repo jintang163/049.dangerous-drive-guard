@@ -13,6 +13,7 @@ import (
 	monitorHttp "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/http"
 	monitorWs "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
 	restrictedHttp "github.com/dangerous-drive-guard/backend/internal/restricted/delivery/http"
+	replanHttp "github.com/dangerous-drive-guard/backend/internal/replan/delivery/http"
 	routeHandler "github.com/dangerous-drive-guard/backend/internal/route/delivery/http"
 	transportHandler "github.com/dangerous-drive-guard/backend/internal/transport/delivery/http"
 	userHttp "github.com/dangerous-drive-guard/backend/internal/user/delivery/http"
@@ -149,6 +150,23 @@ func Register(h *server.Hertz) {
 				gis.POST("/import-json", restrictedHttp.ImportGisData)
 				gis.GET("/imports", restrictedHttp.ListGisImports)
 			}
+		}
+
+		traffic := api.Group("/traffic", middleware.JWTAuth())
+		{
+			traffic.GET("/events", replanHttp.ListTrafficEvents)
+			traffic.GET("/events/:id", replanHttp.GetTrafficEvent)
+			traffic.POST("/events", replanHttp.CreateTrafficEvent)
+			traffic.POST("/events/:id/resolve", middleware.RoleAuth("admin", "dispatcher"), replanHttp.ResolveTrafficEvent)
+		}
+
+		replan := api.Group("/replans", middleware.JWTAuth())
+		{
+			replan.POST("/trigger", middleware.RoleAuth("admin", "dispatcher"), replanHttp.TriggerReplan)
+			replan.POST("/:id/confirm", replanHttp.ConfirmReplan)
+			replan.GET("", replanHttp.ListReplanRecords)
+			replan.GET("/:id", replanHttp.GetReplanRecord)
+			replan.GET("/statistics/overview", replanHttp.GetReplanStatistics)
 		}
 	}
 }

@@ -23,6 +23,11 @@ import {
   Spin,
   Alert,
   Modal,
+  Drawer,
+  Badge,
+  Timeline,
+  Table,
+  DatePicker,
 } from 'antd'
 import {
   EnvironmentOutlined,
@@ -38,11 +43,18 @@ import {
   ReloadOutlined,
   ZoomInOutlined,
   WarningTwoTone,
+  HistoryOutlined,
+  AlertOutlined,
+  EyeOutlined,
+  InfoCircleOutlined,
+  BellOutlined,
 } from '@ant-design/icons'
 import AMap from '@/components/AMap'
-import { routeApi } from '@/services/api'
+import { routeApi, trafficApi, replanApi } from '@/services/api'
 import { formatDistance, formatDuration } from '@/utils/auth'
 import WebSocketManager from '@/services/ws'
+
+const { RangePicker } = DatePicker
 
 const { Title, Text, Paragraph } = Typography
 const { Option } = Select
@@ -115,6 +127,28 @@ const RoutePlan: React.FC = () => {
   const [currentDeviation, setCurrentDeviation] = useState<DeviationEvent | null>(null)
   const [replanLoading, setReplanLoading] = useState(false)
 
+  const [trafficEvents, setTrafficEvents] = useState<any[]>([])
+  const [trafficPage, setTrafficPage] = useState(1)
+  const [trafficTotal, setTrafficTotal] = useState(0)
+  const [trafficLoading, setTrafficLoading] = useState(false)
+  const [eventDetail, setEventDetail] = useState<any | null>(null)
+
+  const [replanPage, setReplanPage] = useState(1)
+  const [replanPageSize] = useState(10)
+  const [replanTotal, setReplanTotal] = useState(0)
+  const [replanList, setReplanList] = useState<any[]>([])
+  const [replanListLoading, setReplanListLoading] = useState(false)
+  const [replanDetail, setReplanDetail] = useState<any | null>(null)
+
+  const [replanSuggestModal, setReplanSuggestModal] = useState(false)
+  const [currentSuggestion, setCurrentSuggestion] = useState<any | null>(null)
+  const [confirmLoading, setConfirmLoading] = useState(false)
+
+  const [activeTab, setActiveTab] = useState<'result' | 'traffic' | 'history'>('result')
+  const [replanFilterStatus, setReplanFilterStatus] = useState<string>('')
+  const [replanFilterTrigger, setReplanFilterTrigger] = useState<string>('')
+  const [replanDateRange, setReplanDateRange] = useState<any>(null)
+
   const fetchRestricted = useCallback(async () => {
     try {
       const data = await routeApi.listRestrictedAreas()
@@ -122,10 +156,40 @@ const RoutePlan: React.FC = () => {
     } catch (e) { }
   }, [])
 
+  const fetchTrafficEvents = useCallback(async () => {
+    setTrafficLoading(true)
+    try {
+      const res: any = await trafficApi.listEvents({ status: 'active', page: trafficPage, page_size: 20 })
+      setTrafficEvents(res?.list || res?.items || [])
+      setTrafficTotal(res?.total || 0)
+    } catch (e) { } finally {
+      setTrafficLoading(false)
+    }
+  }, [trafficPage])
+
+  const fetchReplanHistory = useCallback(async () => {
+    setReplanListLoading(true)
+    try {
+      const params: any = { page: replanPage, page_size: replanPageSize }
+      if (replanFilterStatus) params.status = replanFilterStatus
+      if (replanFilterTrigger) params.trigger_type = replanFilterTrigger
+      if (replanDateRange && replanDateRange.length === 2) {
+        params.start_date = replanDateRange[0].format('YYYY-MM-DD')
+        params.end_date = replanDateRange[1].format('YYYY-MM-DD')
+      }
+      const res: any = await replanApi.list(params)
+      setReplanList(res?.list || res?.items || [])
+      setReplanTotal(res?.total || 0)
+    } catch (e) { } finally {
+      setReplanListLoading(false)
+    }
+  }, [replanPage, replanPageSize, replanFilterStatus, replanFilterTrigger, replanDateRange])
+
   useEffect(() => {
     fetchRestricted()
+    fetchTrafficEvents()
 
-    const unsub = WebSocketManager.getInstance().on('route_deviation', (deviation: DeviationEvent) => {
+    const unsub1 = WebSocketManager.getInstance().on('route_deviation', (deviation: DeviationEvent) => {
       setCurrentDeviation(deviation)
       setDeviationModal(true)
       message.warning({
@@ -143,8 +207,45 @@ const RoutePlan: React.FC = () => {
       })
     })
 
-    return () => unsub()
-  }, [fetchRestricted])
+    const unsub2 = WebSocketManager.getInstance().on('route_replan_suggest', (data: any) => {
+      setCurrentSuggestion(data)
+      setReplanSuggestModal(true)
+      message.info({
+        content: (
+          <div>
+            <div style={{ fontWeight: 600 }}>
+              <BellOutlined /> 重规划建议：{data?.vehicle_plate || '车辆'}
+            </div>
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              {data?.trigger_reason}，预计新增 {Math.max(0, data?.duration_delta || 0)} 分钟
+            </div>
+          </div>
+        ),
+        duration: 15,
+      })
+      fetchReplanHistory()
+    })
+
+    const unsub3 = WebSocketManager.getInstance().on('traffic_event', () => {
+      fetchTrafficEvents()
+    })
+
+    const unsub4 = WebSocketManager.getInstance().on('route_applied', () => {
+      fetchReplanHistory()
+    })
+
+    return () => {
+      unsub1(); unsub2(); unsub3(); unsub4()
+    }
+  }, [fetchRestricted, fetchTrafficEvents, fetchReplanHistory])
+
+  useEffect(() => {
+    fetchTrafficEvents()
+  }, [trafficPage, fetchTrafficEvents])
+
+  useEffect(() => {
+    fetchReplanHistory()
+  }, [replanPage, replanFilterStatus, replanFilterTrigger, replanDateRange, fetchReplanHistory])
 
   const handleSubmit = async (values: any) => {
     setLoading(true)
@@ -223,6 +324,55 @@ const RoutePlan: React.FC = () => {
     }
   }
 
+  const handleConfirmReplan = async (action: 'confirm' | 'reject') => {
+    if (!currentSuggestion) return
+    setConfirmLoading(true)
+    try {
+      await replanApi.confirm(currentSuggestion.replan_id, { action })
+      message.success(action === 'confirm' ? '已确认，新路线已应用' : '已拒绝重规划建议')
+      setReplanSuggestModal(false)
+      fetchReplanHistory()
+    } catch (e: any) {
+      message.error(e.message || '操作失败')
+    } finally {
+      setConfirmLoading(false)
+    }
+  }
+
+  const handleViewReplanDetail = async (id: number) => {
+    try {
+      const detail = await replanApi.get(id)
+      setReplanDetail(detail)
+    } catch (e: any) {
+      message.error(e.message || '获取详情失败')
+    }
+  }
+
+  const handleResolveEvent = async (id: number) => {
+    try {
+      await trafficApi.resolveEvent(id)
+      message.success('事件已标记为解决')
+      fetchTrafficEvents()
+    } catch (e: any) {
+      message.error(e.message || '操作失败')
+    }
+  }
+
+  const triggerTypeLabel: Record<string, { label: string; color: string; icon: any }> = {
+    traffic: { label: '路况事件', color: 'red', icon: <AlertOutlined /> },
+    deviation: { label: '车辆偏航', color: 'orange', icon: <WarningOutlined /> },
+    restricted: { label: '禁行区变更', color: 'purple', icon: <SafetyCertificateOutlined /> },
+    manual: { label: '手动触发', color: 'blue', icon: <RouteOutlined /> },
+  }
+
+  const statusLabel: Record<string, { label: string; color: string }> = {
+    pending: { label: '待确认', color: 'orange' },
+    confirmed: { label: '已确认', color: 'green' },
+    rejected: { label: '已拒绝', color: 'red' },
+    auto_applied: { label: '系统自动应用', color: 'purple' },
+    cancelled: { label: '已取消', color: 'default' },
+  }
+
   const handleMapClick = (lng: number, lat: number) => {
     if (pickingMode === 'origin') {
       form.setFieldsValue({
@@ -244,6 +394,254 @@ const RoutePlan: React.FC = () => {
   }
 
   const currentRoute = routes[activeStrategy]
+
+  const renderStrategyResult = (s: typeof strategyOptions[number]) => {
+    const r = routes[s.key]
+    if (!r) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <Empty description="请先点击「开始三策略规划」" />
+        </div>
+      )
+    }
+    return (
+      <div style={{ padding: '0 20px 20px', overflow: 'auto', height: '100%' }}>
+        <Row gutter={12} style={{ marginBottom: 16 }}>
+          <Col span={12}>
+            <Card size="small" style={{ borderRadius: 8 }}>
+              <Statistic
+                title="总里程"
+                value={formatDistance(r.total_distance)}
+                valueStyle={{ fontSize: 18, color: s.color }}
+              />
+            </Card>
+          </Col>
+          <Col span={12}>
+            <Card size="small" style={{ borderRadius: 8 }}>
+              <Statistic
+                title="预计时长"
+                value={formatDuration(r.estimated_duration)}
+                valueStyle={{ fontSize: 18, color: s.color }}
+              />
+            </Card>
+          </Col>
+        </Row>
+        <Row gutter={12} style={{ marginBottom: 16 }}>
+          <Col span={12}>
+            <Card size="small" style={{ borderRadius: 8 }}>
+              <Statistic
+                title="过路费"
+                value={r.toll_fee || 0}
+                suffix="元"
+                valueStyle={{ fontSize: 16 }}
+              />
+            </Card>
+          </Col>
+          <Col span={12}>
+            <Card size="small" style={{ borderRadius: 8 }}>
+              <Statistic
+                title="油费估算"
+                value={r.fuel_cost || 0}
+                suffix="元"
+                valueStyle={{ fontSize: 16 }}
+              />
+            </Card>
+          </Col>
+        </Row>
+        <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title="安全评分">
+          <Progress
+            percent={r.safety_score}
+            showInfo
+            strokeColor={r.safety_score >= 80 ? '#52c41a' : r.safety_score >= 60 ? '#faad14' : '#ff4d4f'}
+            trailColor="#f5f5f5"
+          />
+        </Card>
+        <Divider orientation="left" style={{ margin: '12px 0' }}>绕行统计</Divider>
+        <Row gutter={8} style={{ marginBottom: 12 }}>
+          <Col span={12}>
+            <Text type="secondary" style={{ fontSize: 12 }}>🏥 避开人口密集</Text>
+            <div style={{ fontWeight: 600, marginTop: 2 }}>{r.avoid_populated || 0} 处</div>
+          </Col>
+          <Col span={12}>
+            <Text type="secondary" style={{ fontSize: 12 }}>🌊 避开水源保护</Text>
+            <div style={{ fontWeight: 600, marginTop: 2 }}>{r.avoid_water_protection || 0} 处</div>
+          </Col>
+        </Row>
+        <Row gutter={8} style={{ marginBottom: 12 }}>
+          <Col span={12}>
+            <Text type="secondary" style={{ fontSize: 12 }}>🚇 避开隧道</Text>
+            <div style={{ fontWeight: 600, marginTop: 2 }}>{r.avoid_tunnels || 0} 处</div>
+          </Col>
+          <Col span={12}>
+            <Text type="secondary" style={{ fontSize: 12 }}>🌉 避开桥梁</Text>
+            <div style={{ fontWeight: 600, marginTop: 2 }}>{r.avoid_bridges || 0} 处</div>
+          </Col>
+        </Row>
+        <Divider orientation="left" style={{ margin: '12px 0' }}>
+          <Space>
+            <WarningOutlined style={{ color: '#fa8c16' }} />
+            禁行路段提示
+            <Tag color="red">{r.restricted_segments?.length || 0}</Tag>
+          </Space>
+        </Divider>
+        {r.restricted_segments && r.restricted_segments.length > 0 ? (
+          <List
+            size="small"
+            dataSource={r.restricted_segments}
+            renderItem={(seg: any) => (
+              <List.Item style={{ padding: '8px 0' }}>
+                <List.Item.Meta
+                  avatar={<Badge status={seg.level === 2 ? 'error' : 'warning'} />}
+                  title={
+                    <Space>
+                      <Text strong>{seg.area_name}</Text>
+                      <Tag color={seg.level === 2 ? 'red' : 'orange'}>
+                        {seg.level === 2 ? '严重' : '注意'}
+                      </Tag>
+                    </Space>
+                  }
+                  description={
+                    <div>
+                      <div style={{ fontSize: 12, color: '#595959', marginBottom: 4 }}>
+                        {seg.reason} · {seg.distance?.toFixed(1)} km
+                      </div>
+                      <Text type="success" style={{ fontSize: 12 }}>💡 {seg.suggestion}</Text>
+                    </div>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        ) : (
+          <Empty description="无禁行路段，路径非常安全！" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        )}
+      </div>
+    )
+  }
+
+  const renderTrafficPanel = () => (
+    <div style={{ padding: 16, overflow: 'auto', height: '100%' }}>
+      <Space style={{ marginBottom: 12, width: '100%' }}>
+        <Button size="small" icon={<ReloadOutlined />} onClick={fetchTrafficEvents}>刷新</Button>
+        <Tag color="red">严重 {trafficEvents.filter(e => e.event_level >= 3).length}</Tag>
+        <Tag color="orange">中等 {trafficEvents.filter(e => e.event_level === 2).length}</Tag>
+      </Space>
+      {trafficEvents.length === 0 ? (
+        <Empty description="暂无活跃路况事件" />
+      ) : (
+        <List
+          size="small"
+          dataSource={trafficEvents}
+          renderItem={(evt: any) => (
+            <List.Item style={{ padding: '10px 0', borderBottom: '1px solid #f0f0f0' }}>
+              <List.Item.Meta
+                avatar={
+                  <AlertOutlined style={{
+                    fontSize: 20,
+                    color: evt.event_level >= 3 ? '#ff4d4f' : evt.event_level === 2 ? '#fa8c16' : '#8c8c8c',
+                  }} />
+                }
+                title={
+                  <Space>
+                    <Text strong>{evt.title}</Text>
+                    {evt.event_level >= 3 && <Tag color="red">严重</Tag>}
+                    {evt.event_level === 2 && <Tag color="orange">中等</Tag>}
+                  </Space>
+                }
+                description={
+                  <div style={{ fontSize: 12, color: '#595959' }}>
+                    <div>🛣️ {evt.road_name || '未知路段'}</div>
+                    <div>⏱️ 预计延误 {evt.duration_minutes || 0} 分钟 · 平均车速 {evt.avg_speed_kmh || 0} km/h</div>
+                    <div style={{ marginTop: 4 }}>
+                      <Button size="small" type="link" style={{ padding: 0 }} onClick={() => setEventDetail(evt)}>
+                        详情
+                      </Button>
+                      <Button size="small" type="link" danger style={{ paddingLeft: 12 }} onClick={() => handleResolveEvent(evt.id)}>
+                        标记解决
+                      </Button>
+                    </div>
+                  </div>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      )}
+    </div>
+  )
+
+  const renderReplanHistory = () => (
+    <div style={{ padding: 16, overflow: 'auto', height: '100%' }}>
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Select
+          size="small"
+          placeholder="状态"
+          allowClear
+          style={{ width: 110 }}
+          value={replanFilterStatus || undefined}
+          onChange={setReplanFilterStatus}
+        >
+          <Option value="pending">待确认</Option>
+          <Option value="confirmed">已确认</Option>
+          <Option value="rejected">已拒绝</Option>
+        </Select>
+        <Select
+          size="small"
+          placeholder="触发类型"
+          allowClear
+          style={{ width: 110 }}
+          value={replanFilterTrigger || undefined}
+          onChange={setReplanFilterTrigger}
+        >
+          <Option value="traffic">路况</Option>
+          <Option value="deviation">偏航</Option>
+          <Option value="restricted">禁行</Option>
+          <Option value="manual">手动</Option>
+        </Select>
+      </Space>
+      {replanList.length === 0 ? (
+        <Empty description="暂无重规划记录" />
+      ) : (
+        <Timeline
+          mode="left"
+          items={replanList.map((r: any) => {
+            const trigger = triggerTypeLabel[r.trigger_type] || { label: r.trigger_type, color: 'default', icon: <InfoCircleOutlined /> }
+            const status = statusLabel[r.status] || { label: r.status, color: 'default' }
+            return {
+              color: trigger.color,
+              dot: trigger.icon,
+              children: (
+                <Card size="small" style={{ borderRadius: 8 }}>
+                  <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                    <Space>
+                      <Tag color={trigger.color}>{trigger.label}</Tag>
+                      <Tag color={status.color}>{status.label}</Tag>
+                      <Text code style={{ fontSize: 11 }}>{r.replan_no}</Text>
+                    </Space>
+                    <div style={{ fontSize: 13, color: '#1f1f1f' }}>{r.trigger_reason}</div>
+                    <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                      {r.vehicle_plate} · {r.waybill_no}
+                      {r.duration_delta !== undefined && r.duration_delta !== 0 && (
+                        <span style={{ marginLeft: 8, color: r.duration_delta >= 0 ? '#ff4d4f' : '#52c41a' }}>
+                          · {r.duration_delta >= 0 ? '+' : ''}{r.duration_delta} 分钟
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#bfbfbf' }}>
+                      {new Date(r.created_at).toLocaleString()}
+                    </div>
+                    <Button type="link" size="small" icon={<EyeOutlined />} style={{ padding: 0 }} onClick={() => handleViewReplanDetail(r.id)}>
+                      查看详情
+                    </Button>
+                  </Space>
+                </Card>
+              ),
+            }
+          })}
+        />
+      )}
+    </div>
+  )
 
   const routeMarkers = [
     ...(originPicked ? [{
@@ -268,6 +666,12 @@ const RoutePlan: React.FC = () => {
         info: seg,
       }
     }) : []),
+    ...trafficEvents.filter(e => e.center_lat && e.center_lng).map(evt => ({
+      position: [evt.center_lng, evt.center_lat] as [number, number],
+      title: evt.title,
+      color: evt.event_level >= 3 ? '#ff4d4f' : evt.event_level === 2 ? '#fa8c16' : '#8c8c8c',
+      info: evt,
+    })),
   ]
 
   const routePolylines = currentRoute?.route_path ? [{
@@ -509,6 +913,7 @@ const RoutePlan: React.FC = () => {
                 <ExperimentOutlined style={{ color: '#1677ff' }} />
                 <Text strong style={{ fontSize: 15 }}>路径规划地图</Text>
                 <Tag color="geekblue">高德高精地图 · 货车模式</Tag>
+                <Tag color="orange">实时路况：{trafficEvents.length} 起</Tag>
               </Space>
             }
           >
@@ -532,143 +937,167 @@ const RoutePlan: React.FC = () => {
             bodyStyle={{ padding: 0, display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}
           >
             <Tabs
-              activeKey={activeStrategy}
-              onChange={k => setActiveStrategy(k as StrategyType)}
+              activeKey={activeTab}
+              onChange={k => setActiveTab(k as any)}
               size="large"
               style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
-              items={strategyOptions.map(s => ({
-                key: s.key,
-                label: (
-                  <span style={{ color: activeStrategy === s.key ? s.color : undefined }}>
-                    {s.icon} {s.label}
-                  </span>
-                ),
-                children: (() => {
-                  const r = routes[s.key]
-                  if (!r) {
-                    return (
-                      <div style={{ padding: 40, textAlign: 'center' }}>
-                        <Empty description="请先点击「开始三策略规划」" />
-                      </div>
-                    )
-                  }
-                  return (
-                    <div style={{ padding: '0 20px 20px', overflow: 'auto', height: '100%' }}>
-                      <Row gutter={12} style={{ marginBottom: 16 }}>
-                        <Col span={12}>
-                          <Card size="small" style={{ borderRadius: 8 }}>
-                            <Statistic
-                              title="总里程"
-                              value={formatDistance(r.total_distance)}
-                              valueStyle={{ fontSize: 18, color: s.color }}
-                            />
-                          </Card>
-                        </Col>
-                        <Col span={12}>
-                          <Card size="small" style={{ borderRadius: 8 }}>
-                            <Statistic
-                              title="预计时长"
-                              value={formatDuration(r.estimated_duration)}
-                              valueStyle={{ fontSize: 18, color: s.color }}
-                            />
-                          </Card>
-                        </Col>
-                      </Row>
-
-                      <Row gutter={12} style={{ marginBottom: 16 }}>
-                        <Col span={12}>
-                          <Card size="small" style={{ borderRadius: 8 }}>
-                            <Statistic
-                              title="过路费"
-                              value={r.toll_fee?.toFixed?.(2) || 0}
-                              prefix="¥"
-                              valueStyle={{ fontSize: 16 }}
-                            />
-                          </Card>
-                        </Col>
-                        <Col span={12}>
-                          <Card size="small" style={{ borderRadius: 8 }}>
-                            <Statistic
-                              title="油费估算"
-                              value={r.fuel_cost?.toFixed?.(2) || 0}
-                              prefix="¥"
-                              valueStyle={{ fontSize: 16 }}
-                            />
-                          </Card>
-                        </Col>
-                      </Row>
-
-                      <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title="安全评分">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-                          <Progress
-                            type="circle"
-                            percent={r.safety_score || 0}
-                            size={80}
-                            strokeColor={
-                              (r.safety_score || 0) >= 90 ? '#52c41a' :
-                                (r.safety_score || 0) >= 70 ? '#faad14' : '#ff4d4f'
-                            }
-                          />
-                          <div>
-                            <Space direction="vertical" size={4}>
-                              <Space>
-                                <Tag color="green">🚇 避开隧道 ×{r.avoid_tunnels || 0}</Tag>
-                              </Space>
-                              <Space>
-                                <Tag color="cyan">🌉 避开桥梁 ×{r.avoid_bridges || 0}</Tag>
-                              </Space>
-                              <Space>
-                                <Tag color="purple">🏘️ 避开密集区 ×{r.avoid_populated || 0}</Tag>
-                              </Space>
-                              <Space>
-                                <Tag color="blue">💧 避开水源地 ×{r.avoid_water_protection || 0}</Tag>
-                              </Space>
-                            </Space>
-                          </div>
-                        </div>
-                      </Card>
-
-                      <Divider style={{ margin: '12px 0' }} />
-
-                      <Title level={5} style={{ marginTop: 0 }}>
-                        <WarningOutlined style={{ color: '#fa8c16' }} /> 禁行/限行路段
-                      </Title>
-                      {r.restricted_segments?.length ? (
-                        <List
-                          size="small"
-                          dataSource={r.restricted_segments}
-                          renderItem={(seg) => (
-                            <List.Item style={{ padding: '10px 0', borderBottom: '1px dashed #f0f0f0' }}>
-                              <div style={{ width: '100%' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                                  <Tag color={seg.level === 2 ? 'red' : 'orange'} style={{ margin: 0 }}>
-                                    {seg.level === 2 ? '必须绕行' : '建议绕行'}
-                                  </Tag>
-                                  <Text strong style={{ fontSize: 13 }}>{seg.area_name}</Text>
-                                  <Tag color="blue">{seg.area_type}</Tag>
-                                </div>
-                                <Paragraph type="secondary" style={{ margin: '4px 0', fontSize: 12 }}>
-                                  <ExclamationCircleOutlined /> {seg.reason}
-                                </Paragraph>
-                                <Paragraph style={{ margin: '4px 0', fontSize: 12, color: '#52c41a' }}>
-                                  <CheckCircleOutlined /> {seg.suggestion}
-                                </Paragraph>
-                              </div>
-                            </List.Item>
-                          )}
-                        />
-                      ) : (
-                        <Empty description="无禁行路段，路径非常安全！" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                      )}
-                    </div>
-                  )
-                })(),
-              }))}
+              items={[
+                {
+                  key: 'result',
+                  label: <Space><RouteOutlined /> 策略结果</Space>,
+                  children: (
+                    <Tabs
+                      activeKey={activeStrategy}
+                      onChange={k => setActiveStrategy(k as StrategyType)}
+                      size="small"
+                      style={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+                      items={strategyOptions.map(s => ({
+                        key: s.key,
+                        label: (
+                          <span style={{ color: activeStrategy === s.key ? s.color : undefined }}>
+                            {s.icon} {s.label}
+                          </span>
+                        ),
+                        children: renderStrategyResult(s),
+                      }))}
+                    />
+                  ),
+                },
+                {
+                  key: 'traffic',
+                  label: <Space><Badge count={trafficEvents.length} size="small"><AlertOutlined /></Badge> 实时路况</Space>,
+                  children: renderTrafficPanel(),
+                },
+                {
+                  key: 'history',
+                  label: <Space><HistoryOutlined /> 重规划历史</Space>,
+                  children: renderReplanHistory(),
+                },
+              ]}
             />
           </Card>
         </Col>
       </Row>
-    </div>
+
+      <Card bordered={false} style={{ borderRadius: 12 }} title={<Space><HistoryOutlined /> 重规划历史记录（完整列表）</Space>}>
+        <Space style={{ marginBottom: 16 }} wrap>
+          <Select
+            placeholder="触发类型"
+            allowClear
+            value={replanFilterTrigger || undefined}
+            onChange={setReplanFilterTrigger}
+            style={{ width: 160 }}
+          >
+            <Option value="traffic">路况事件</Option>
+            <Option value="deviation">车辆偏航</Option>
+            <Option value="restricted">禁行区变更</Option>
+            <Option value="manual">手动触发</Option>
+          </Select>
+          <Select
+            placeholder="处理状态"
+            allowClear
+            value={replanFilterStatus || undefined}
+            onChange={setReplanFilterStatus}
+            style={{ width: 160 }}
+          >
+            <Option value="pending">待确认</Option>
+            <Option value="confirmed">已确认</Option>
+            <Option value="rejected">已拒绝</Option>
+            <Option value="auto_applied">系统自动应用</Option>
+          </Select>
+          <RangePicker value={replanDateRange} onChange={setReplanDateRange} />
+          <Button icon={<ReloadOutlined />} onClick={fetchReplanHistory}>刷新</Button>
+        </Space>
+        <Table
+          dataSource={replanList}
+          loading={replanListLoading}
+          rowKey="id"
+          pagination={{
+            current: replanPage,
+            pageSize: replanPageSize,
+            total: replanTotal,
+            onChange: setReplanPage,
+            showTotal: t => `共 ${t} 条重规划记录`,
+          }}
+          columns={[
+            {
+              title: '编号',
+              dataIndex: 'replan_no',
+              width: 180,
+              render: (v: string) => <Text code>{v}</Text>,
+            },
+            {
+              title: '运单/车牌',
+              width: 200,
+              render: (_: any, r: any) => (
+                <div>
+                  <div>{r.waybill_no}</div>
+                  <div style={{ fontSize: 12, color: '#8c8c8c' }}>{r.vehicle_plate} · {r.driver_name}</div>
+                </div>
+              ),
+            },
+            {
+              title: '触发类型',
+              dataIndex: 'trigger_type',
+              width: 120,
+              render: (v: string) => {
+                const meta = triggerTypeLabel[v] || { label: v, color: 'default', icon: <InfoCircleOutlined /> }
+                return <Tag color={meta.color} icon={meta.icon}>{meta.label}</Tag>
+              },
+            },
+            {
+              title: '触发原因',
+              dataIndex: 'trigger_reason',
+              ellipsis: true,
+              width: 260,
+              render: (v: string) => <Tooltip title={v}>{v}</Tooltip>,
+            },
+            {
+              title: '对比(新/原)',
+              width: 200,
+              render: (_: any, r: any) => (
+                <Space direction="vertical" size={2}>
+                  <Text type={r.distance_delta >= 0 ? 'danger' : 'success'}>
+                    {r.distance_delta >= 0 ? '+' : ''}{(r.distance_delta || 0).toFixed(1)} km
+                  </Text>
+                  <Text type={r.duration_delta >= 0 ? 'danger' : 'success'}>
+                    {r.duration_delta >= 0 ? '+' : ''}{r.duration_delta || 0} 分钟
+                  </Text>
+                </Space>
+              ),
+            },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 120,
+              render: (v: string) => {
+                const meta = statusLabel[v] || { label: v, color: 'default' }
+                return <Tag color={meta.color}>{meta.label}</Tag>
+              },
+            },
+            {
+              title: '触发时间',
+              dataIndex: 'created_at',
+              width: 170,
+              render: (v: string) => new Date(v).toLocaleString(),
+            },
+            {
+              title: '操作',
+              width: 90,
+              render: (_: any, r: any) => (
+                <Button
+                  type="link"
+                  icon={<EyeOutlined />}
+                  size="small"
+                  onClick={() => handleViewReplanDetail(r.id)}
+                >
+                  详情
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </Card>
 
       <Modal
         title={<Space><WarningOutlined style={{ color: '#faad14' }} /> 车辆偏航提醒</Space>}
@@ -703,6 +1132,313 @@ const RoutePlan: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      <Modal
+        title={
+          <Space>
+            <BellOutlined style={{ color: '#1677ff' }} />
+            路线重规划建议
+            {currentSuggestion?.status === 'pending' && <Tag color="orange">待司机确认</Tag>}
+          </Space>
+        }
+        open={replanSuggestModal}
+        onCancel={() => setReplanSuggestModal(false)}
+        footer={
+          <Space>
+            <Button
+              danger
+              loading={confirmLoading}
+              onClick={() => handleConfirmReplan('reject')}
+            >
+              拒绝建议
+            </Button>
+            <Button
+              type="primary"
+              loading={confirmLoading}
+              onClick={() => handleConfirmReplan('confirm')}
+            >
+              <CheckCircleOutlined /> 确认并应用新路线
+            </Button>
+          </Space>
+        }
+        width={620}
+        destroyOnClose
+      >
+        {currentSuggestion && (
+          <Spin spinning={confirmLoading}>
+            <Alert
+              type="info"
+              showIcon
+              message={`${currentSuggestion.vehicle_plate || '车辆'} 前方路况变化`}
+              description={currentSuggestion.trigger_reason}
+              style={{ marginBottom: 16, borderRadius: 8 }}
+            />
+
+            {currentSuggestion.traffic_event && (
+              <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} type="inner" title="关联路况事件">
+                <Space direction="vertical" size={2}>
+                  <Space>
+                    <Tag color="red">{currentSuggestion.traffic_event.type}</Tag>
+                    <Tag color="orange">等级 {currentSuggestion.traffic_event.level}</Tag>
+                    <Text strong>{currentSuggestion.traffic_event.title}</Text>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    🛣️ {currentSuggestion.traffic_event.road_name || '未知路段'}
+                  </Text>
+                </Space>
+              </Card>
+            )}
+
+            <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="运单号">{currentSuggestion.waybill_no}</Descriptions.Item>
+              <Descriptions.Item label="驾驶员">{currentSuggestion.driver_name}</Descriptions.Item>
+              <Descriptions.Item label="原剩余里程">
+                {(currentSuggestion.original_distance_remaining || 0).toFixed(1)} km
+              </Descriptions.Item>
+              <Descriptions.Item label="原剩余时长">
+                {currentSuggestion.original_duration_remaining || 0} 分钟
+              </Descriptions.Item>
+              <Descriptions.Item label="新剩余里程">
+                <Text type={currentSuggestion.distance_delta >= 0 ? 'danger' : 'success'}>
+                  {(currentSuggestion.new_distance_remaining || 0).toFixed(1)} km
+                  ({currentSuggestion.distance_delta >= 0 ? '+' : ''}
+                  {(currentSuggestion.distance_delta || 0).toFixed(1)})
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="新剩余时长">
+                <Text type={currentSuggestion.duration_delta >= 0 ? 'danger' : 'success'}>
+                  {currentSuggestion.new_duration_remaining || 0} 分钟
+                  ({currentSuggestion.duration_delta >= 0 ? '+' : ''}
+                  {currentSuggestion.duration_delta || 0})
+                </Text>
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left" style={{ margin: '8px 0 12px' }}>候选路线</Divider>
+            <List
+              size="small"
+              dataSource={currentSuggestion.candidates || []}
+              renderItem={(c: any, idx: number) => (
+                <List.Item
+                  style={c.is_recommended ? {
+                    background: '#f6ffed',
+                    borderRadius: 8,
+                    padding: '10px 12px',
+                    marginBottom: 8,
+                    border: '1px solid #b7eb8f',
+                  } : { padding: '10px 12px', borderRadius: 8, marginBottom: 8, border: '1px solid #f0f0f0' }}
+                >
+                  <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                    <Space>
+                      <Tag color={idx === 0 ? 'blue' : 'default'}>方案 {idx + 1}</Tag>
+                      {c.is_recommended && <Tag color="green">推荐</Tag>}
+                      <Text strong style={{ textTransform: 'uppercase' }}>{c.strategy}</Text>
+                    </Space>
+                    <Space size={16}>
+                      <Text>📏 {(c.total_distance || 0).toFixed(1)} km</Text>
+                      <Text>⏱️ {c.estimated_duration || 0} 分钟</Text>
+                      <Text>🛡️ 安全 {c.safety_score || 0}</Text>
+                      {c.toll_fee > 0 && <Text>💰 过路费 {c.toll_fee} 元</Text>}
+                    </Space>
+                  </Space>
+                </List.Item>
+              )}
+            />
+            {(!currentSuggestion.candidates || currentSuggestion.candidates.length === 0) && (
+              <Empty description="无候选方案" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            )}
+          </Spin>
+        )}
+      </Modal>
+
+      <Drawer
+        title={
+          <Space>
+            <AlertOutlined /> 路况事件详情
+            {eventDetail?.status === 'active' && <Badge status="processing" text="活跃中" />}
+          </Space>
+        }
+        placement="right"
+        width={480}
+        open={!!eventDetail}
+        onClose={() => setEventDetail(null)}
+      >
+        {eventDetail && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Tag color={eventDetail.event_level >= 3 ? 'red' : 'orange'}>
+              {eventDetail.event_level >= 3 ? '严重事件' : '中等事件'}
+            </Tag>
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="事件编号">{eventDetail.event_no}</Descriptions.Item>
+              <Descriptions.Item label="事件类型">{eventDetail.event_type}</Descriptions.Item>
+              <Descriptions.Item label="事件标题">{eventDetail.title}</Descriptions.Item>
+              <Descriptions.Item label="路段名称">{eventDetail.road_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="事件描述">{eventDetail.description || '-'}</Descriptions.Item>
+              <Descriptions.Item label="中心坐标">
+                {eventDetail.center_lat}, {eventDetail.center_lng}
+              </Descriptions.Item>
+              <Descriptions.Item label="影响长度">{(eventDetail.affected_length_km || 0).toFixed(2)} km</Descriptions.Item>
+              <Descriptions.Item label="拥堵等级">
+                {['', '畅通', '缓行', '拥堵', '严重拥堵'][eventDetail.congestion_level || 0]}
+              </Descriptions.Item>
+              <Descriptions.Item label="平均车速">{eventDetail.avg_speed_kmh || 0} km/h</Descriptions.Item>
+              <Descriptions.Item label="预计延误">{eventDetail.duration_minutes || 0} 分钟</Descriptions.Item>
+              <Descriptions.Item label="开始时间">{new Date(eventDetail.started_at).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="预计结束">
+                {eventDetail.expected_end_at ? new Date(eventDetail.expected_end_at).toLocaleString() : '-'}
+              </Descriptions.Item>
+              <Descriptions.Item label="数据来源">{eventDetail.source || 'system'}</Descriptions.Item>
+            </Descriptions>
+            <Space>
+              <Button type="primary" danger onClick={() => handleResolveEvent(eventDetail.id)}>
+                <CheckCircleOutlined /> 标记已解决
+              </Button>
+            </Space>
+          </Space>
+        )}
+      </Drawer>
+
+      <Drawer
+        title={
+          <Space>
+            <HistoryOutlined /> 重规划详情
+            {replanDetail && <Tag color={statusLabel[replanDetail.status]?.color || 'default'}>
+              {statusLabel[replanDetail.status]?.label || replanDetail.status}
+            </Tag>}
+          </Space>
+        }
+        placement="right"
+        width={620}
+        open={!!replanDetail}
+        onClose={() => setReplanDetail(null)}
+      >
+        {replanDetail && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Tag color={triggerTypeLabel[replanDetail.trigger_type]?.color || 'default'}>
+              {triggerTypeLabel[replanDetail.trigger_type]?.icon}
+              {' '}{triggerTypeLabel[replanDetail.trigger_type]?.label || replanDetail.trigger_type}
+            </Tag>
+
+            <Descriptions column={2} size="small" bordered title="基础信息">
+              <Descriptions.Item label="重规划编号">{replanDetail.replan_no}</Descriptions.Item>
+              <Descriptions.Item label="触发时间">
+                {new Date(replanDetail.created_at).toLocaleString()}
+              </Descriptions.Item>
+              <Descriptions.Item label="运单号">{replanDetail.waybill_no}</Descriptions.Item>
+              <Descriptions.Item label="车牌号">{replanDetail.vehicle_plate}</Descriptions.Item>
+              <Descriptions.Item label="驾驶员">{replanDetail.driver_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="调度员">{replanDetail.operator_name || '系统自动'}</Descriptions.Item>
+              <Descriptions.Item label="触发原因" span={2}>{replanDetail.trigger_reason}</Descriptions.Item>
+            </Descriptions>
+
+            <Descriptions column={2} size="small" bordered title="路线对比">
+              <Descriptions.Item label="原剩余里程">
+                {(replanDetail.original_distance_remaining || 0).toFixed(2)} km
+              </Descriptions.Item>
+              <Descriptions.Item label="新剩余里程">
+                <Text type={replanDetail.distance_delta >= 0 ? 'danger' : 'success'}>
+                  {(replanDetail.new_distance_remaining || 0).toFixed(2)} km
+                  ({replanDetail.distance_delta >= 0 ? '+' : ''}{(replanDetail.distance_delta || 0).toFixed(2)})
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="原剩余时长">
+                {replanDetail.original_duration_remaining || 0} 分钟
+              </Descriptions.Item>
+              <Descriptions.Item label="新剩余时长">
+                <Text type={replanDetail.duration_delta >= 0 ? 'danger' : 'success'}>
+                  {replanDetail.new_duration_remaining || 0} 分钟
+                  ({replanDetail.duration_delta >= 0 ? '+' : ''}{replanDetail.duration_delta || 0})
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="原路线ID">{replanDetail.original_route_plan_id || '-'}</Descriptions.Item>
+              <Descriptions.Item label="新路线ID">{replanDetail.new_route_plan_id || '-'}</Descriptions.Item>
+            </Descriptions>
+
+            <Card size="small" title="处理时间线" style={{ borderRadius: 8 }}>
+              <Timeline
+                items={[
+                  {
+                    color: 'blue',
+                    children: (
+                      <span>
+                        触发重规划：{replanDetail.trigger_reason}
+                        <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                          {new Date(replanDetail.created_at).toLocaleString()}
+                        </div>
+                      </span>
+                    ),
+                  },
+                  replanDetail.notified_at && {
+                    color: 'cyan',
+                    children: (
+                      <span>
+                        通知已推送至司机端
+                        <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                          {new Date(replanDetail.notified_at).toLocaleString()}
+                        </div>
+                      </span>
+                    ),
+                  },
+                  replanDetail.driver_confirm_at && {
+                    color: replanDetail.status === 'confirmed' || replanDetail.status === 'auto_applied' ? 'green' : 'red',
+                    children: (
+                      <span>
+                        司机已{replanDetail.status === 'confirmed' || replanDetail.status === 'auto_applied' ? '确认' : '拒绝'}
+                        {replanDetail.confirm_note && <div>备注：{replanDetail.confirm_note}</div>}
+                        <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                          {new Date(replanDetail.driver_confirm_at).toLocaleString()}
+                        </div>
+                      </span>
+                    ),
+                  },
+                  replanDetail.applied_at && {
+                    color: 'green',
+                    dot: <CheckCircleOutlined />,
+                    children: (
+                      <span>
+                        新路线已应用
+                        <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                          {new Date(replanDetail.applied_at).toLocaleString()}
+                        </div>
+                      </span>
+                    ),
+                  },
+                ].filter(Boolean) as any}
+              />
+            </Card>
+
+            {replanDetail.candidate_routes?.length > 0 && (
+              <Card size="small" title="候选路线" style={{ borderRadius: 8 }}>
+                <List
+                  size="small"
+                  dataSource={replanDetail.candidate_routes}
+                  renderItem={(c: any) => (
+                    <List.Item style={{
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      marginBottom: 8,
+                      background: c.is_recommended ? '#f6ffed' : '#fafafa',
+                      border: `1px solid ${c.is_recommended ? '#b7eb8f' : '#f0f0f0'}`,
+                    }}>
+                      <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                        <Space>
+                          <Tag color="blue">{c.strategy}</Tag>
+                          {c.is_recommended && <Tag color="green">✨ 应用路线</Tag>}
+                        </Space>
+                        <Space size={16}>
+                          <span>📏 {(c.total_distance || 0).toFixed(1)} km</span>
+                          <span>⏱️ {c.estimated_duration || 0} 分钟</span>
+                          <span>🛡️ {c.safety_score || 0} 分</span>
+                        </Space>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            )}
+          </Space>
+        )}
+      </Drawer>
     </div>
   )
 }

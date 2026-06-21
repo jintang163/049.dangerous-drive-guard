@@ -240,6 +240,32 @@ export const routeApi = {
     api.post<any>('/routes/service-areas/recommend', data),
 }
 
+export const trafficApi = {
+  listEvents: (params?: { status?: string; event_type?: string; keyword?: string } & PageParams) =>
+    api.getPage<any>('/traffic/events', params),
+  getEvent: (id: number) => api.get<any>(`/traffic/events/${id}`),
+  createEvent: (data: any) => api.post<any>('/traffic/events', data),
+  resolveEvent: (id: number) => api.post<any>(`/traffic/events/${id}/resolve`),
+}
+
+export const replanApi = {
+  trigger: (data: any) => api.post<any>('/replans/trigger', data),
+  confirm: (id: number, data: { action: 'confirm' | 'reject'; confirm_note?: string }) =>
+    api.post<any>(`/replans/${id}/confirm`, data),
+  list: (params?: {
+    waybill_id?: number
+    vehicle_id?: number
+    trigger_type?: string
+    status?: string
+    keyword?: string
+    start_date?: string
+    end_date?: string
+  } & PageParams) => api.getPage<any>('/replans', params),
+  get: (id: number) => api.get<any>(`/replans/${id}`),
+  getStatistics: (params?: { days?: number; org_id?: number }) =>
+    api.get<any>('/replans/statistics/overview', params),
+}
+
 export const fatigueApi = {
   detect: (data: { image_base64: string; vehicle_id: number; driver_id: number }) =>
     api.post<{ fatigue_score: number; fatigue_level: string; alarm_triggered: boolean; landmarks: number[] }>('/fatigue/detect', data),
