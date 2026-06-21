@@ -8,6 +8,7 @@ import (
 	authSvc "github.com/dangerous-drive-guard/backend/internal/auth/service"
 	blockchainHttp "github.com/dangerous-drive-guard/backend/internal/blockchain/delivery/http"
 	blockchainSvc "github.com/dangerous-drive-guard/backend/internal/blockchain/service"
+	escortHttp "github.com/dangerous-drive-guard/backend/internal/escort/delivery/http"
 	fatigueHttp "github.com/dangerous-drive-guard/backend/internal/fatigue/delivery/http"
 	fatigueSvc "github.com/dangerous-drive-guard/backend/internal/fatigue/service"
 	monitorHttp "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/http"
@@ -170,6 +171,50 @@ func Register(h *server.Hertz) {
 			replan.GET("", replanHttp.ListReplanRecords)
 			replan.GET("/:id", replanHttp.GetReplanRecord)
 			replan.GET("/statistics/overview", replanHttp.GetReplanStatistics)
+		}
+
+		escort := api.Group("/escort", middleware.JWTAuth())
+		{
+			escort.GET("/statistics", escortHttp.GetEscortStatistics)
+
+			shifts := escort.Group("/shifts")
+			{
+				shifts.POST("", middleware.RoleAuth("admin", "dispatcher"), escortHttp.CreateShift)
+				shifts.GET("/:id", escortHttp.GetShift)
+				shifts.GET("", escortHttp.ListShifts)
+				shifts.PUT("/:id/status", middleware.RoleAuth("admin", "dispatcher"), escortHttp.UpdateShiftStatus)
+				shifts.POST("/:id/assign-vehicles", middleware.RoleAuth("admin", "dispatcher"), escortHttp.AssignVehicles)
+				shifts.GET("/:id/assignments", escortHttp.GetShiftAssignments)
+			}
+
+			sos := escort.Group("/sos")
+			{
+				sos.POST("/report", escortHttp.ReportSOS)
+				sos.GET("", escortHttp.GetSOSAlerts)
+				sos.POST("/handle", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.HandleSOS)
+				sos.POST("/:id/resolve", middleware.RoleAuth("admin", "dispatcher"), escortHttp.ResolveSOS)
+			}
+
+			escort.GET("/track/playback", escortHttp.GetTrackPlayback)
+
+			videos := escort.Group("/videos")
+			{
+				videos.GET("", escortHttp.GetVideoRecords)
+				videos.POST("/:id/view", escortHttp.ViewVideoRecord)
+			}
+
+			intercom := escort.Group("/intercom")
+			{
+				intercom.POST("", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.SendIntercom)
+				intercom.GET("/logs", escortHttp.GetIntercomLogs)
+			}
+
+			polling := escort.Group("/polling")
+			{
+				polling.POST("/start", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.StartPollingSession)
+				polling.POST("/:id/end", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.EndPollingSession)
+				polling.GET("/vehicles", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.GetEscortVehiclesForPolling)
+			}
 		}
 	}
 }

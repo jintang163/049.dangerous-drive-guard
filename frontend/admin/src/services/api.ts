@@ -327,6 +327,72 @@ export const escortApi = {
   getByWaybill: (waybill_id: number) => api.get<EscortEvent[]>(`/escort/events/waybill/${waybill_id}`),
   exportReport: (waybill_id: number) =>
     api.get<Blob>(`/escort/report/${waybill_id}`, undefined, { responseType: 'blob' }),
+  getStatistics: (params?: { org_id?: number }) =>
+    api.get<any>('/escort/statistics', params),
+
+  createShift: (data: {
+    escort_id: number
+    escort_name: string
+    shift_date: string
+    start_time: string
+    end_time: string
+    polling_interval?: number
+    description?: string
+  }) => api.post<any>('/escort/shifts', data),
+  getShift: (id: number) => api.get<any>(`/escort/shifts/${id}`),
+  listShifts: (params?: PageParams & { escort_id?: number; dispatcher_id?: number; status?: string }) =>
+    api.getPage<any>('/escort/shifts', params),
+  updateShiftStatus: (id: number, status: string) =>
+    api.put<any>(`/escort/shifts/${id}/status`, { status }),
+  assignVehicles: (id: number, vehicle_ids: number[]) =>
+    api.post<any>(`/escort/shifts/${id}/assign-vehicles`, { vehicle_ids }),
+  getShiftAssignments: (id: number) =>
+    api.get<{ list: any[]; total: number }>(`/escort/shifts/${id}/assignments`),
+
+  reportSOS: (data: {
+    vehicle_id: number
+    latitude?: number
+    longitude?: string
+    sos_type?: string
+    description?: string
+  }) => api.post<any>('/escort/sos/report', data),
+  getSOSAlerts: (params?: PageParams & { vehicle_id?: number; escort_id?: number; status?: string }) =>
+    api.getPage<any>('/escort/sos', params),
+  handleSOS: (data: { alert_id: number; handle_note?: string }) =>
+    api.post<any>('/escort/sos/handle', data),
+  resolveSOS: (id: number, note?: string) =>
+    api.post<any>(`/escort/sos/${id}/resolve`, { note }),
+
+  getTrackPlayback: (params: {
+    waybill_id?: number
+    vehicle_id?: number
+    start_time?: string
+    end_time?: string
+  }) => api.get<{ list: any[]; total: number }>('/escort/track/playback', params),
+
+  getVideoRecords: (params?: PageParams & {
+    vehicle_id?: number
+    waybill_id?: number
+    record_type?: string
+    start_time?: string
+    end_time?: string
+  }) => api.getPage<any>('/escort/videos', params),
+  viewVideoRecord: (id: number) => api.post<any>(`/escort/videos/${id}/view`),
+
+  sendIntercom: (data: {
+    vehicle_id: number
+    message: string
+    priority?: string
+  }) => api.post<any>('/escort/intercom', data),
+  getIntercomLogs: (params?: PageParams & { vehicle_id?: number }) =>
+    api.getPage<any>('/escort/intercom/logs', params),
+
+  startPollingSession: (params?: { shift_id?: number }) =>
+    api.post<any>('/escort/polling/start', undefined, { params }),
+  endPollingSession: (id: number, polling_count?: number) =>
+    api.post<any>(`/escort/polling/${id}/end`, { polling_count }),
+  getEscortVehiclesForPolling: (params?: { escort_id?: number }) =>
+    api.get<{ list: any[]; total: number }>('/escort/polling/vehicles', params),
 }
 
 export const rescueApi = {

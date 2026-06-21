@@ -130,6 +130,14 @@ class WebSocketManager {
       case 'driver_fatigue': {
         break
       }
+      case 'sos_alert': {
+        this.emit('sos_alert', data)
+        break
+      }
+      case 'escort_polling': {
+        this.emit('escort_polling', data)
+        break
+      }
       case 'heartbeat':
         break
       case 'error':

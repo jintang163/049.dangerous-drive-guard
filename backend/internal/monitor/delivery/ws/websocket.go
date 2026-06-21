@@ -40,6 +40,8 @@ const (
 	MsgRouteReplanSuggest   MessageType = "route_replan_suggest"
 	MsgRouteReplanConfirmed MessageType = "route_replan_confirmed"
 	MsgRouteApplied         MessageType = "route_applied"
+	MsgSOSAlert             MessageType = "sos_alert"
+	MsgEscortPolling        MessageType = "escort_polling"
 	MsgSubscribe            MessageType = "subscribe"
 	MsgError                MessageType = "error"
 )
@@ -564,6 +566,49 @@ func (h *Hub) BroadcastTrafficEvent(evt *model.TrafficEvent) {
 			select {
 			case client.Send <- data:
 			default:
+			}
+		}
+	}
+	h.mu.RUnlock()
+}
+
+func (h *Hub) BroadcastSOS(ctx context.Context, alert interface{}) {
+	msg := &WSMessage{
+		Type:      MsgSOSAlert,
+		Timestamp: time.Now().Unix(),
+		Data:      alert,
+	}
+	data, _ := json.Marshal(msg)
+	h.broadcast <- msg
+
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			select {
+			case client.Send <- data:
+			default:
+			}
+		}
+	}
+	h.mu.RUnlock()
+}
+
+func (h *Hub) BroadcastEscortPolling(escortID int64, payload interface{}) {
+	msg := &WSMessage{
+		Type:      MsgEscortPolling,
+		Timestamp: time.Now().Unix(),
+		Data:      payload,
+	}
+	msgData, _ := json.Marshal(msg)
+
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			if client.UserID == escortID || client.Role == "admin" || client.Role == "dispatcher" {
+				select {
+				case client.Send <- msgData:
+				default:
+				}
 			}
 		}
 	}
