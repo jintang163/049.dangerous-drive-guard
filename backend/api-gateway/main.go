@@ -15,6 +15,7 @@ import (
 
 	"github.com/dangerous-drive-guard/backend/api-gateway/routes"
 	escortSvc "github.com/dangerous-drive-guard/backend/internal/escort/service"
+	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
@@ -42,6 +43,16 @@ func main() {
 
 	if err := database.Init(&cfg.Database); err != nil {
 		logger.Sugar.Fatalf("init database failed: %v", err)
+	}
+
+	db := database.GetDB()
+	if err := db.AutoMigrate(
+		&model.DrivingRestRecord{},
+		&model.ServiceAreaRealtimeStatus{},
+		&model.ServiceAreaReview{},
+		&model.ServiceAreaRecommendation{},
+	); err != nil {
+		logger.Sugar.Warnf("auto migrate failed: %v", err)
 	}
 
 	if _, err := storage.InitMinIO(&cfg.Storage); err != nil {

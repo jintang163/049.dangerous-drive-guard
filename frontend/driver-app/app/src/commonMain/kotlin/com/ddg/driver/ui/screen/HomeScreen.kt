@@ -22,6 +22,7 @@ import androidx.compose.material.Icon
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.LocalGasStation
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,8 +48,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ddg.driver.data.local.AppDataStore
+import com.ddg.driver.data.model.RestCountdown
 import com.ddg.driver.data.model.Waybill
 import com.ddg.driver.domain.usecase.GetCurrentWaybillUseCase
+import com.ddg.driver.domain.usecase.GetRestCountdownUseCase
+import com.ddg.driver.ui.navigation.DriverContext
 import com.ddg.driver.ui.theme.DDGDanger
 import com.ddg.driver.ui.theme.DDGGray
 import com.ddg.driver.ui.theme.DDGRed
@@ -59,6 +64,7 @@ import com.ddg.driver.ui.theme.DDGWarning
 import com.ddg.driver.ui.components.FatigueIndicator
 import com.ddg.driver.ui.components.SOSButton
 import com.ddg.driver.ui.components.WaybillCard
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.koin.compose.getKoin
 
@@ -66,13 +72,17 @@ import org.koin.compose.getKoin
 fun HomeScreen(
     onStartNavigation: () -> Unit,
     onViewAlarms: () -> Unit,
-    onViewProfile: () -> Unit
+    onViewProfile: () -> Unit,
+    onViewRestCountdown: () -> Unit = {},
+    onAutoRecommend: (DriverContext) -> Unit = {}
 ) {
     val dataStore: AppDataStore = getKoin().get()
     val getCurrentWaybillUseCase: GetCurrentWaybillUseCase = getKoin().get()
+    val getRestCountdownUseCase: GetRestCountdownUseCase = getKoin().get()
     val scope = rememberCoroutineScope()
 
     var waybill by remember { mutableStateOf<Waybill?>(null) }
+    var restCountdown by remember { mutableStateOf<RestCountdown?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -82,6 +92,20 @@ fun HomeScreen(
             isLoading = false
             result.onSuccess { waybill = it }
                 .onFailure { errorMessage = it.message }
+        }
+        scope.launch {
+            val result = getRestCountdownUseCase(1, 1)
+            result.onSuccess { restCountdown = it }
+        }
+    }
+
+    LaunchedEffect(restCountdown) {
+        while (true) {
+            delay(60_000)
+            scope.launch {
+                val result = getRestCountdownUseCase(1, 1)
+                result.onSuccess { restCountdown = it }
+            }
         }
     }
 
@@ -136,7 +160,32 @@ fun HomeScreen(
             }
 
             item {
-                FatigueSection()
+                FatigueSection(
+                    restCountdown = restCountdown,
+                    onViewRestCountdown = onViewRestCountdown
+                )
+            }
+
+            item {
+                restCountdown?.let { countdown ->
+                    if (countdown.is_overtime) {
+                        OvertimeWarningBanner(
+                            overtimeMinutes = countdown.overtime_minutes,
+                            onNavigateToRest = {
+                                onAutoRecommend(DriverContext(
+                                    driverId = countdown.driver_id,
+                                    vehicleId = countdown.vehicle_id,
+                                    waybillId = countdown.waybill_id
+                                ))
+                            }
+                        )
+                    } else if (countdown.remaining_drive_minutes <= 60 && countdown.remaining_drive_minutes > 0 && countdown.status == "driving") {
+                        ApproachingLimitBanner(
+                            remainingMinutes = countdown.remaining_drive_minutes,
+                            onNavigateToRest = onViewRestCountdown
+                        )
+                    }
+                }
             }
 
             item {
@@ -351,47 +400,180 @@ private fun StatItem(
 }
 
 @Composable
-private fun FatigueSection() {
+private fun FatigueSection(
+    restCountdown: RestCountdown?,
+    onViewRestCountdown: () -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         backgroundColor = DDGGray,
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "疲劳监测",
-                style = MaterialTheme.typography.h5,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "疲劳监测",
+                    style = MaterialTheme.typography.h5,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                if (restCountdown != null) {
+                    Card(
+                        modifier = Modifier.clickable { onViewRestCountdown() },
+                        backgroundColor = DDGWarning.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            "查看倒计时 →",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.caption,
+                            color = DDGWarning
+                        )
+                    }
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val progress = restCountdown?.let {
+                    it.continuous_drive_minutes.toFloat() / it.max_continuous_drive.toFloat()
+                } ?: 0.25f
+                val level = restCountdown?.let {
+                    when {
+                        it.is_overtime -> com.ddg.driver.data.model.FatigueLevel.DANGEROUS
+                        it.remaining_drive_minutes <= 60 -> com.ddg.driver.data.model.FatigueLevel.WARNING
+                        else -> com.ddg.driver.data.model.FatigueLevel.NORMAL
+                    }
+                } ?: com.ddg.driver.data.model.FatigueLevel.NORMAL
+
                 FatigueIndicator(
-                    progress = 0.25f,
-                    level = com.ddg.driver.data.model.FatigueLevel.NORMAL,
+                    progress = progress.coerceIn(0f, 1f),
+                    level = level,
                     size = 80.dp
                 )
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
+                    val statusText = restCountdown?.let {
+                        when {
+                            it.is_overtime -> "超时驾驶！"
+                            it.remaining_drive_minutes <= 60 -> "即将到达上限"
+                            it.status == "resting" -> "休息中"
+                            else -> "状态良好"
+                        }
+                    } ?: "状态良好"
+                    val statusColor = restCountdown?.let {
+                        when {
+                            it.is_overtime -> DDGRed
+                            it.remaining_drive_minutes <= 60 -> DDGWarning
+                            it.status == "resting" -> DDGWarning
+                            else -> DDGSuccess
+                        }
+                    } ?: DDGSuccess
+
                     Text(
-                        text = "状态良好",
+                        text = statusText,
                         style = MaterialTheme.typography.h5,
-                        color = DDGSuccess,
+                        color = statusColor,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "已连续驾驶 2小时15分钟",
+                        text = restCountdown?.let {
+                            if (it.status == "resting") {
+                                "已休息 ${it.current_rest_minutes} 分钟"
+                            } else {
+                                "已连续驾驶 ${it.continuous_drive_minutes / 60}小时${it.continuous_drive_minutes % 60}分钟"
+                            }
+                        } ?: "已连续驾驶 2小时15分钟",
                         style = MaterialTheme.typography.body2
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "建议：再行驶1小时后停车休息",
+                        text = restCountdown?.let {
+                            if (it.is_overtime) {
+                                "⚠ 超时 ${it.overtime_minutes} 分钟，请立即休息！"
+                            } else if (it.remaining_drive_minutes <= 60) {
+                                "建议：再行驶 ${it.remaining_drive_minutes} 分钟后停车休息"
+                            } else {
+                                "建议：再行驶1小时后停车休息"
+                            }
+                        } ?: "建议：再行驶1小时后停车休息",
                         style = MaterialTheme.typography.caption,
-                        color = DDGWarning
+                        color = if (restCountdown?.is_overtime == true) DDGRed else DDGWarning
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OvertimeWarningBanner(
+    overtimeMinutes: Int,
+    onNavigateToRest: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onNavigateToRest() },
+        backgroundColor = DDGRed.copy(alpha = 0.15f),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = null,
+                tint = DDGRed,
+                modifier = Modifier.size(32.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("超时驾驶警告！", fontWeight = FontWeight.Bold, color = DDGRed)
+                Text("已超时 $overtimeMinutes 分钟，请立即寻找服务区休息", style = MaterialTheme.typography.caption, color = DDGRed)
+            }
+            Icon(
+                Icons.Default.DirectionsCar,
+                contentDescription = null,
+                tint = DDGRed,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ApproachingLimitBanner(
+    remainingMinutes: Int,
+    onNavigateToRest: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onNavigateToRest() },
+        backgroundColor = DDGWarning.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.AccessTime,
+                contentDescription = null,
+                tint = DDGWarning,
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("即将达到驾驶时限", fontWeight = FontWeight.Bold, color = DDGWarning)
+                Text("剩余 $remainingMinutes 分钟，建议提前规划休息", style = MaterialTheme.typography.caption, color = DDGWarning)
             }
         }
     }

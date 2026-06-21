@@ -382,36 +382,22 @@ func (s *ServiceAreaService) RecommendServiceAreas(ctx context.Context, req *mod
 		SELECT sa.id, sa.name, sa.highway_name, sa.direction,
 		       sa.latitude, sa.longitude, sa.has_danger_goods_parking,
 		       sa.danger_parking_spaces, sa.phone, sa.rating,
-		       st.available_danger_spaces, st.available_parking_spaces,
-		       st.security_level, st.security_patrol_interval,
-		       st.restaurant_rating, st.restaurant_wait_minutes,
-		       st.has_fuel, st.fuel_price_diesel,
-		       st.has_charging, st.charging_piles_available,
-		       st.crowd_level, st.update_time
+		       COALESCE(st.available_danger_spaces, sa.danger_parking_spaces / 2) AS available_danger_spaces,
+		       COALESCE(st.available_parking_spaces, sa.parking_spaces / 2) AS available_parking_spaces,
+		       COALESCE(st.security_level, 3) AS security_level,
+		       COALESCE(st.security_patrol_interval, 30) AS security_patrol_interval,
+		       COALESCE(st.restaurant_rating, 0) AS restaurant_rating,
+		       COALESCE(st.restaurant_wait_minutes, 0) AS restaurant_wait_minutes,
+		       COALESCE(st.has_fuel, sa.has_fuel_station) AS has_fuel,
+		       COALESCE(st.fuel_price_diesel, 0) AS fuel_price_diesel,
+		       COALESCE(st.has_charging, sa.has_charging) AS has_charging,
+		       COALESCE(st.charging_piles_available, 0) AS charging_piles_available,
+		       COALESCE(st.crowd_level, 2) AS crowd_level,
+		       COALESCE(st.update_time, NOW()) AS update_time
 		FROM service_areas sa
 		LEFT JOIN service_area_realtime_status st ON st.service_area_id = sa.id
-		WHERE sa.status = 1
-		HAVING distance_km <= ?
-		ORDER BY match_score DESC
-		LIMIT 10`,
+		WHERE sa.status = 1`,
 	).Rows()
-
-	query := `
-		SELECT sa.id, sa.name, sa.highway_name, sa.direction,
-		       sa.latitude, sa.longitude, sa.has_danger_goods_parking,
-		       sa.danger_parking_spaces, sa.phone, sa.rating,
-		       st.available_danger_spaces, st.available_parking_spaces,
-		       st.security_level, st.security_patrol_interval,
-		       st.restaurant_rating, st.restaurant_wait_minutes,
-		       st.has_fuel, st.fuel_price_diesel,
-		       st.has_charging, st.charging_piles_available,
-		       st.crowd_level, st.update_time
-		FROM service_areas sa
-		LEFT JOIN service_area_realtime_status st ON st.service_area_id = sa.id
-		WHERE sa.status = 1
-	`
-
-	rows, err = s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
 		logger.Sugar.Errorf("recommend service areas query error: %v", err)
 		return nil, err
@@ -425,24 +411,28 @@ func (s *ServiceAreaService) RecommendServiceAreas(ctx context.Context, req *mod
 		var lat, lng float64
 		var hasDangerParking bool
 		var dangerSpaces int
-		var availableDangerSpaces *int
-		var securityLevel *int
-		var restaurantRating *float64
-		var hasFuel *bool
-		var hasCharging *bool
+		var phone string
+		var rating float64
+		var availableParkingSpaces int
+		var securityPatrolInterval int
+		var restaurantWaitMinutes int
+		var fuelPriceDiesel float64
+		var chargingPilesAvailable int
+		var crowdLevel int
+		var updateTime time.Time
 
 		err = rows.Scan(
 			&area.ServiceAreaID, &area.ServiceAreaName,
 			&struct{}{}, &struct{}{},
 			&lat, &lng,
 			&hasDangerParking, &dangerSpaces,
-			&struct{}{}, &struct{}{},
-			&availableDangerSpaces, &struct{}{},
-			&securityLevel, &struct{}{},
-			&restaurantRating, &struct{}{},
-			&hasFuel, &struct{}{},
-			&hasCharging, &struct{}{},
-			&struct{}{}, &struct{}{},
+			&phone, &rating,
+			&area.AvailableDangerSpaces, &availableParkingSpaces,
+			&area.SecurityLevel, &securityPatrolInterval,
+			&area.RestaurantRating, &restaurantWaitMinutes,
+			&area.HasFuel, &fuelPriceDiesel,
+			&area.HasCharging, &chargingPilesAvailable,
+			&crowdLevel, &updateTime,
 		)
 		if err != nil {
 			continue
@@ -458,30 +448,6 @@ func (s *ServiceAreaService) RecommendServiceAreas(ctx context.Context, req *mod
 
 		avgSpeed := 80.0
 		area.EstimatedArrivalMinutes = int(math.Round(distance / avgSpeed * 60))
-
-		if availableDangerSpaces != nil {
-			area.AvailableDangerSpaces = *availableDangerSpaces
-		} else {
-			area.AvailableDangerSpaces = dangerSpaces / 2
-		}
-
-		if securityLevel != nil {
-			area.SecurityLevel = *securityLevel
-		} else {
-			area.SecurityLevel = 3
-		}
-
-		if restaurantRating != nil {
-			area.RestaurantRating = *restaurantRating
-		}
-
-		if hasFuel != nil {
-			area.HasFuel = *hasFuel
-		}
-
-		if hasCharging != nil {
-			area.HasCharging = *hasCharging
-		}
 
 		if req.HazardClass != "" && !hasDangerParking {
 			continue
@@ -535,9 +501,13 @@ func (s *ServiceAreaService) RecommendServiceAreas(ctx context.Context, req *mod
 
 	alternativesJSON, _ := json.Marshal(alternatives)
 
-	continuousDrive := req.FatigueScore
+	continuousDrive := int(req.FatigueScore)
 	if continuousDrive == 0 {
 		continuousDrive = 120
+	}
+	remainingDrive := defaultMaxContinuousDrive - continuousDrive
+	if remainingDrive < 0 {
+		remainingDrive = 0
 	}
 
 	result := s.db.WithContext(ctx).Exec(`
@@ -553,7 +523,7 @@ func (s *ServiceAreaService) RecommendServiceAreas(ctx context.Context, req *mod
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'system')`,
 		recommendNo, req.DriverID, req.VehicleID, req.WaybillID,
 		req.Latitude, req.Longitude,
-		int(continuousDrive), int(math.Max(0, 240-continuousDrive)),
+		continuousDrive, remainingDrive,
 		req.FatigueScore, req.HazardClass,
 		recommendReason,
 		best.ServiceAreaID, best.ServiceAreaName,
@@ -578,8 +548,8 @@ func (s *ServiceAreaService) RecommendServiceAreas(ctx context.Context, req *mod
 		WaybillID:              req.WaybillID,
 		CurrentLatitude:        req.Latitude,
 		CurrentLongitude:       req.Longitude,
-		ContinuousDriveMinutes: int(continuousDrive),
-		RemainingDriveMinutes:  int(math.Max(0, 240-continuousDrive)),
+		ContinuousDriveMinutes: continuousDrive,
+		RemainingDriveMinutes:  remainingDrive,
 		FatigueScore:           req.FatigueScore,
 		HazardClass:            req.HazardClass,
 		RecommendReason:        recommendReason,
@@ -741,7 +711,7 @@ func (s *ServiceAreaService) updateServiceAreaRating(ctx context.Context, servic
 			math.Round(avgRating*100)/100, serviceAreaID,
 		)
 
-		s.db.WithContext(ctx().Exec(`
+		s.db.WithContext(ctx).Exec(`
 			UPDATE service_area_realtime_status SET restaurant_rating = ? WHERE service_area_id = ?`,
 			math.Round(avgRating*100)/100, serviceAreaID,
 		)
@@ -937,4 +907,75 @@ func (s *ServiceAreaService) ListDrivingRestRecords(ctx context.Context, driverI
 	}
 
 	return records, total, nil
+}
+
+func (s *ServiceAreaService) AcceptRecommendation(ctx context.Context, id int64) (map[string]interface{}, error) {
+	now := time.Now()
+	result := s.db.WithContext(ctx).Exec(`
+		UPDATE service_area_recommendations SET status = 'accepted', accepted_at = ? WHERE id = ? AND status = 'pending'`,
+		now, id,
+	)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("recommendation not found or already processed")
+	}
+	return map[string]interface{}{"success": true, "accepted_at": now}, nil
+}
+
+func (s *ServiceAreaService) RejectRecommendation(ctx context.Context, id int64, reason string) (map[string]interface{}, error) {
+	result := s.db.WithContext(ctx).Exec(`
+		UPDATE service_area_recommendations SET status = 'rejected' WHERE id = ? AND status = 'pending'`,
+		id,
+	)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("recommendation not found or already processed")
+	}
+	return map[string]interface{}{"success": true}, nil
+}
+
+func (s *ServiceAreaService) UpdateRealtimeStatus(ctx context.Context, serviceAreaID int64, availableParkingSpaces, availableDangerSpaces int, securityLevel int, restaurantRating float64, crowdLevel int, weatherCondition string) error {
+	now := time.Now()
+
+	var existsID int64
+	s.db.WithContext(ctx).Raw(
+		"SELECT id FROM service_area_realtime_status WHERE service_area_id = ?",
+		serviceAreaID,
+	).Scan(&existsID)
+
+	if existsID > 0 {
+		result := s.db.WithContext(ctx).Exec(`
+			UPDATE service_area_realtime_status SET
+			available_parking_spaces = ?,
+			available_danger_spaces = ?,
+			security_level = ?,
+			restaurant_rating = ?,
+			crowd_level = ?,
+			weather_condition = ?,
+			update_time = ?,
+			data_source = 'manual'
+			WHERE service_area_id = ?`,
+			availableParkingSpaces, availableDangerSpaces,
+			securityLevel, restaurantRating,
+			crowdLevel, weatherCondition,
+			now, serviceAreaID,
+		)
+		return result.Error
+	}
+
+	result := s.db.WithContext(ctx).Exec(`
+		INSERT INTO service_area_realtime_status
+		(service_area_id, available_parking_spaces, available_danger_spaces,
+		 security_level, restaurant_rating, crowd_level, weather_condition,
+		 update_time, data_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
+		serviceAreaID, availableParkingSpaces, availableDangerSpaces,
+		securityLevel, restaurantRating, crowdLevel, weatherCondition,
+		now,
+	)
+	return result.Error
 }

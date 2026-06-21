@@ -10,6 +10,15 @@ import com.ddg.driver.data.model.ReplanConfirmRequest
 import com.ddg.driver.data.model.RoutePlan
 import com.ddg.driver.data.model.ServiceArea
 import com.ddg.driver.data.model.Waybill
+import com.ddg.driver.data.model.RestCountdown
+import com.ddg.driver.data.model.CheckInRequest
+import com.ddg.driver.data.model.CheckOutRequest
+import com.ddg.driver.data.model.DrivingRestRecord
+import com.ddg.driver.data.model.SubmitReviewRequest
+import com.ddg.driver.data.model.ServiceAreaReview
+import com.ddg.driver.data.model.RecommendRequest
+import com.ddg.driver.data.model.ServiceAreaRecommendation
+import com.ddg.driver.data.model.ServiceAreaRealtimeStatus
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -145,6 +154,69 @@ class ApiService(private val client: HttpClient) {
             url {
                 parameters.append("limit", limit.toString())
             }
+        }
+    }
+
+    suspend fun getRestCountdown(driverId: Long, vehicleId: Long): RestCountdown {
+        return client.get {
+            url("${ApiClient.BASE_URL}/service-areas/rest/countdown")
+            url {
+                parameters.append("driver_id", driverId.toString())
+                parameters.append("vehicle_id", vehicleId.toString())
+            }
+        }
+    }
+
+    suspend fun startDriving(driverId: Long, vehicleId: Long, waybillId: Long = 0): DrivingRestRecord {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/rest/start")
+            setBody(mapOf("driver_id" to driverId, "vehicle_id" to vehicleId, "waybill_id" to waybillId))
+        }
+    }
+
+    suspend fun checkInServiceArea(request: CheckInRequest): DrivingRestRecord {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/rest/check-in")
+            setBody(request)
+        }
+    }
+
+    suspend fun checkOutServiceArea(request: CheckOutRequest): DrivingRestRecord {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/rest/check-out")
+            setBody(request)
+        }
+    }
+
+    suspend fun recommendServiceAreas(request: RecommendRequest): ServiceAreaRecommendation {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/recommend")
+            setBody(request)
+        }
+    }
+
+    suspend fun submitReview(request: SubmitReviewRequest): ServiceAreaReview {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/reviews")
+            setBody(request)
+        }
+    }
+
+    suspend fun getServiceAreaDetail(id: Long): Map<String, Any> {
+        return client.get {
+            url("${ApiClient.BASE_URL}/service-areas/$id")
+        }
+    }
+
+    suspend fun acceptRecommendation(id: Long): Map<String, Any> {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/recommendations/$id/accept")
+        }
+    }
+
+    suspend fun rejectRecommendation(id: Long): Map<String, Any> {
+        return client.post {
+            url("${ApiClient.BASE_URL}/service-areas/recommendations/$id/reject")
         }
     }
 }

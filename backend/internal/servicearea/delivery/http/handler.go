@@ -201,17 +201,13 @@ func AcceptRecommendation(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	now := time.Now()
-	result := serviceAreaService.db.WithContext(ctx).Exec(`
-		UPDATE service_area_recommendations SET status = 'accepted', accepted_at = ? WHERE id = ? AND status = 'pending'`,
-		now, id,
-	)
-	if result.Error != nil {
-		response.InternalError(c, result.Error.Error())
+	result, err := serviceAreaService.AcceptRecommendation(ctx, id)
+	if err != nil {
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, map[string]interface{}{"success": true, "accepted_at": now})
+	response.Success(c, result)
 }
 
 func RejectRecommendation(ctx context.Context, c *app.RequestContext) {
@@ -227,16 +223,13 @@ func RejectRecommendation(ctx context.Context, c *app.RequestContext) {
 	}
 	c.BindAndValidate(&reason)
 
-	result := serviceAreaService.db.WithContext(ctx).Exec(`
-		UPDATE service_area_recommendations SET status = 'rejected' WHERE id = ? AND status = 'pending'`,
-		id,
-	)
-	if result.Error != nil {
-		response.InternalError(c, result.Error.Error())
+	result, err := serviceAreaService.RejectRecommendation(ctx, id, reason.Reason)
+	if err != nil {
+		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, map[string]interface{}{"success": true})
+	response.Success(c, result)
 }
 
 func UpdateRealtimeStatus(ctx context.Context, c *app.RequestContext) {
@@ -255,53 +248,16 @@ func UpdateRealtimeStatus(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	now := time.Now()
-
-	var existsID int64
-	serviceAreaService.db.WithContext(ctx).Raw(
-		"SELECT id FROM service_area_realtime_status WHERE service_area_id = ?",
-		req.ServiceAreaID,
-	).Scan(&existsID)
-
-	var err error
-	if existsID > 0 {
-		result := serviceAreaService.db.WithContext(ctx).Exec(`
-			UPDATE service_area_realtime_status SET
-			available_parking_spaces = ?,
-			available_danger_spaces = ?,
-			security_level = ?,
-			restaurant_rating = ?,
-			crowd_level = ?,
-			weather_condition = ?,
-			update_time = ?,
-			data_source = 'manual'
-			WHERE service_area_id = ?`,
-			req.AvailableParkingSpaces, req.AvailableDangerSpaces,
-			req.SecurityLevel, req.RestaurantRating,
-			req.CrowdLevel, req.WeatherCondition,
-			now, req.ServiceAreaID,
-		)
-		err = result.Error
-	} else {
-		result := serviceAreaService.db.WithContext(ctx).Exec(`
-			INSERT INTO service_area_realtime_status
-			(service_area_id, available_parking_spaces, available_danger_spaces,
-			 security_level, restaurant_rating, crowd_level, weather_condition,
-			 update_time, data_source)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual')`,
-			req.ServiceAreaID, req.AvailableParkingSpaces, req.AvailableDangerSpaces,
-			req.SecurityLevel, req.RestaurantRating, req.CrowdLevel, req.WeatherCondition,
-			now,
-		)
-		err = result.Error
-	}
-
+	err := serviceAreaService.UpdateRealtimeStatus(ctx, req.ServiceAreaID,
+		req.AvailableParkingSpaces, req.AvailableDangerSpaces,
+		req.SecurityLevel, req.RestaurantRating,
+		req.CrowdLevel, req.WeatherCondition)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
 	}
 
-	response.Success(c, map[string]interface{}{"success": true, "update_time": now})
+	response.Success(c, map[string]interface{}{"success": true, "update_time": time.Now()})
 }
 
 func GetStatistics(ctx context.Context, c *app.RequestContext) {
