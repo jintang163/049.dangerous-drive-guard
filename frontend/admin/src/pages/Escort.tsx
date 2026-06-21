@@ -77,6 +77,7 @@ import WebSocketManager from '@/services/ws'
 import { formatDateTime } from '@/utils/auth'
 import dayjs from 'dayjs'
 import AMapLoader from '@amap/amap-jsapi-loader'
+import type { GeoFenceAlertItem, GeoFenceStats } from '@/store/app'
 
 const { Title, Text, Paragraph } = Typography
 const { Option } = Select
@@ -221,6 +222,21 @@ const Escort: React.FC = () => {
   const [playbackLoading, setPlaybackLoading] = useState(false)
 
   const [videoRecords, setVideoRecords] = useState<any[]>([])
+
+  const [geoFenceAlerts, setGeoFenceAlerts] = useState<GeoFenceAlertItem[]>([])
+  const [geoFenceLoading, setGeoFenceLoading] = useState(false)
+  const [geoFenceStats, setGeoFenceStats] = useState<GeoFenceStats>({
+    total_alerts: 0, pending_alerts: 0, today_alerts: 0, reported_alerts: 0,
+    resolved_alerts: 0, total_confirm_logs: 0, detour_count: 0, deviate_count: 0, auto_reported_count: 0,
+  })
+  const [geoFenceDetail, setGeoFenceDetail] = useState<GeoFenceAlertItem | null>(null)
+  const [geoFenceConfirmModal, setGeoFenceConfirmModal] = useState<{ visible: boolean; alert: GeoFenceAlertItem | null }>({ visible: false, alert: null })
+  const [geoFenceResolveModal, setGeoFenceResolveModal] = useState<{ visible: boolean; alert: GeoFenceAlertItem | null }>({ visible: false, alert: null })
+  const [geoFenceConfirmForm] = Form.useForm()
+  const [geoFenceResolveForm] = Form.useForm()
+  const [geoFenceFilterStatus, setGeoFenceFilterStatus] = useState<string>()
+  const [geoFenceConfirmLogs, setGeoFenceConfirmLogs] = useState<any[]>([])
+  const [geoFenceLogsLoading, setGeoFenceLogsLoading] = useState(false)
 
   const eventMapContainerRef = useRef<HTMLDivElement>(null)
   const eventMapInstanceRef = useRef<any>(null)
@@ -395,6 +411,81 @@ const Escort: React.FC = () => {
     }
   }, [])
 
+  const fetchGeoFenceAlerts = useCallback(async () => {
+    setGeoFenceLoading(true)
+    try {
+      const result = await escortApi.getGeoFenceAlerts({ page_size: 50, status: geoFenceFilterStatus as any })
+      setGeoFenceAlerts(((result?.list || []) as GeoFenceAlertItem[]))
+    } catch (e) {
+      console.error('[Escort] fetchGeoFenceAlerts error:', e)
+    } finally {
+      setGeoFenceLoading(false)
+    }
+  }, [geoFenceFilterStatus])
+
+  const fetchGeoFenceStats = useCallback(async () => {
+    try {
+      const data = await escortApi.getGeoFenceStats()
+      if (data) setGeoFenceStats(data as GeoFenceStats)
+    } catch (e) {
+      console.error('[Escort] fetchGeoFenceStats error:', e)
+    }
+  }, [])
+
+  const fetchGeoFenceConfirmLogs = useCallback(async (alertId?: number, vehicleId?: number) => {
+    setGeoFenceLogsLoading(true)
+    try {
+      const result = await escortApi.getGeoFenceConfirmLogs({ alert_id: alertId, vehicle_id: vehicleId, page_size: 30 })
+      setGeoFenceConfirmLogs(((result?.list || []) as any[]))
+    } catch (e) {
+      console.error('[Escort] fetchGeoFenceConfirmLogs error:', e)
+    } finally {
+      setGeoFenceLogsLoading(false)
+    }
+  }, [])
+
+  const handleGeoFenceConfirm = async (values: any) => {
+    const alert = geoFenceConfirmModal.alert
+    if (!alert) return
+    try {
+      await escortApi.confirmGeoFenceAlert({
+        alert_id: alert.id,
+        confirm_type: values.confirm_type,
+        reason_detail: values.reason_detail,
+        note: values.note,
+      })
+      message.success('确认成功')
+      setGeoFenceConfirmModal({ visible: false, alert: null })
+      geoFenceConfirmForm.resetFields()
+      fetchGeoFenceAlerts()
+      fetchGeoFenceStats()
+      fetchStatistics()
+    } catch (e) {
+      message.error('确认失败')
+    }
+  }
+
+  const handleGeoFenceResolve = async (values: any) => {
+    const alert = geoFenceResolveModal.alert
+    if (!alert) return
+    try {
+      await escortApi.resolveGeoFenceAlert(alert.id, values.resolved_note)
+      message.success('处理完成')
+      setGeoFenceResolveModal({ visible: false, alert: null })
+      geoFenceResolveForm.resetFields()
+      fetchGeoFenceAlerts()
+      fetchGeoFenceStats()
+      fetchStatistics()
+    } catch (e) {
+      message.error('处理失败')
+    }
+  }
+
+  const handleOpenGeoFenceDetail = (alert: GeoFenceAlertItem) => {
+    setGeoFenceDetail(alert)
+    fetchGeoFenceConfirmLogs(alert.id)
+  }
+
   const fetchTrackPlayback = useCallback(async (vehicle: any) => {
     setPlaybackLoading(true)
     try {
@@ -428,7 +519,9 @@ const Escort: React.FC = () => {
     fetchShifts()
     fetchVideoRecords()
     fetchIntercomLogs()
-  }, [fetchStatistics, fetchWaybills, fetchSOSAlerts, fetchShifts, fetchVideoRecords, fetchIntercomLogs])
+    fetchGeoFenceAlerts()
+    fetchGeoFenceStats()
+  }, [fetchStatistics, fetchWaybills, fetchSOSAlerts, fetchShifts, fetchVideoRecords, fetchIntercomLogs, fetchGeoFenceAlerts, fetchGeoFenceStats])
 
   useEffect(() => {
     fetchWaybills()
@@ -476,11 +569,25 @@ const Escort: React.FC = () => {
       }
     })
 
+    const geoFenceUnsubscribe = ws.on('geo_fence_alert', (data) => {
+      fetchGeoFenceAlerts()
+      fetchGeoFenceStats()
+      fetchStatistics()
+      if (data && data.alert_level && data.alert_level >= 2) {
+        try {
+          const audio = new Audio('/alert.mp3')
+          audio.volume = 0.7
+          audio.play().catch(() => {})
+        } catch (e) {}
+      }
+    })
+
     return () => {
       sosUnsubscribe()
       pollingUnsubscribe()
+      geoFenceUnsubscribe()
     }
-  }, [fetchStatistics, fetchSOSAlerts])
+  }, [fetchStatistics, fetchSOSAlerts, fetchGeoFenceAlerts, fetchGeoFenceStats])
 
   useEffect(() => {
     const startPolling = async () => {
@@ -533,6 +640,10 @@ const Escort: React.FC = () => {
         case 'alerts':
           fetchSOSAlerts()
           break
+        case 'geo-fence':
+          fetchGeoFenceAlerts()
+          fetchGeoFenceStats()
+          break
         case 'shifts':
           fetchShifts()
           break
@@ -544,7 +655,7 @@ const Escort: React.FC = () => {
     if (activeTab) {
       handleTabChange(activeTab)
     }
-  }, [activeTab, fetchWaybills, fetchPollingVehicles, fetchSOSAlerts, fetchShifts, fetchVideoRecords])
+  }, [activeTab, fetchWaybills, fetchPollingVehicles, fetchSOSAlerts, fetchGeoFenceAlerts, fetchGeoFenceStats, fetchShifts, fetchVideoRecords])
 
   const handleAddEvent = async (values: any) => {
     if (!selectedWaybill) return
@@ -1418,6 +1529,174 @@ const Escort: React.FC = () => {
     </Row>
   )
 
+  const geoFenceStatusMap: Record<string, { color: string; label: string }> = {
+    pending: { color: 'red', label: '待确认' },
+    confirmed: { color: 'blue', label: '已确认' },
+    escalated: { color: 'orange', label: '已上报' },
+    resolved: { color: 'green', label: '已解决' },
+  }
+
+  const renderGeoFenceTab = () => (
+    <Row gutter={16}>
+      <Col xs={24}>
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col xs={24} md={6}>
+            <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Space>
+                  <WarningOutlined style={{ color: '#ff4d4f', fontSize: 18 }} />
+                  <Text type="secondary">待确认告警</Text>
+                </Space>
+                <Statistic value={geoFenceStats.pending_alerts} valueStyle={{ color: '#ff4d4f', fontSize: 28 }} />
+              </Space>
+            </ProCard>
+          </Col>
+          <Col xs={24} md={6}>
+            <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Space>
+                  <EnvironmentOutlined style={{ color: '#faad14', fontSize: 18 }} />
+                  <Text type="secondary">今日偏航</Text>
+                </Space>
+                <Statistic value={geoFenceStats.today_alerts} valueStyle={{ color: '#faad14', fontSize: 28 }} />
+              </Space>
+            </ProCard>
+          </Col>
+          <Col xs={24} md={6}>
+            <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Space>
+                  <DashboardOutlined style={{ color: '#eb2f96', fontSize: 18 }} />
+                  <Text type="secondary">自动上报调度</Text>
+                </Space>
+                <Statistic value={geoFenceStats.auto_reported_count} valueStyle={{ color: '#eb2f96', fontSize: 28 }} />
+              </Space>
+            </ProCard>
+          </Col>
+          <Col xs={24} md={6}>
+            <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 16 }}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Space>
+                  <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 18 }} />
+                  <Text type="secondary">已解决</Text>
+                </Space>
+                <Statistic value={geoFenceStats.resolved_alerts} valueStyle={{ color: '#52c41a', fontSize: 28 }} />
+              </Space>
+            </ProCard>
+          </Col>
+        </Row>
+        <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 0 }}>
+          <ProTable<GeoFenceAlertItem>
+            columns={[
+              { title: '告警编号', dataIndex: 'alert_no', width: 140, render: (t) => <Text copyable style={{ fontSize: 12 }}>{t}</Text> },
+              {
+                title: '车辆', dataIndex: 'plate_number', width: 110,
+                render: (t, r) => (
+                  <Space>
+                    <CarOutlined style={{ color: '#1677ff' }} />
+                    <Text strong>{t}</Text>
+                  </Space>
+                ),
+              },
+              { title: '押运员', dataIndex: 'escort_name', width: 90 },
+              { title: '运单号', dataIndex: 'waybill_no', width: 130, render: (t) => t ? <Text style={{ fontSize: 12 }}>{t}</Text> : '-' },
+              {
+                title: '偏离距离', width: 110,
+                render: (_, r) => (
+                  <Space>
+                    <Text strong style={{ color: r.distance_from_route_meters > 1000 ? '#ff4d4f' : r.distance_from_route_meters > 700 ? '#faad14' : '#fa8c16', fontSize: 14 }}>
+                      {r.distance_from_route_meters?.toFixed(0)}
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 11 }}>米 / {r.threshold_meters}米</Text>
+                  </Space>
+                ),
+              },
+              {
+                title: '告警级别', dataIndex: 'alert_level', width: 90,
+                render: (l) => {
+                  const colors = ['', '#faad14', '#fa8c16', '#ff4d4f']
+                  const labels = ['', '一般', '关注', '紧急']
+                  return <Tag color={colors[l] || 'default'}>{labels[l] || '-'}</Tag>
+                },
+              },
+              {
+                title: '当日累计', dataIndex: 'daily_deviate_count', width: 90,
+                render: (n) => {
+                  const count = n || 0
+                  const color = count >= 3 ? 'red' : count >= 2 ? 'orange' : count >= 1 ? 'blue' : 'default'
+                  return (
+                    <Space>
+                      <Tag color={color}>{count} 次</Tag>
+                      {count >= 3 && <Tooltip title="当日累计达3次，已自动上报调度"><Badge status="error" /></Tooltip>}
+                    </Space>
+                  )
+                },
+              },
+              {
+                title: '确认原因', dataIndex: 'deviate_reason', width: 90,
+                render: (t) => t === 'detour' ? <Tag color="blue">绕路</Tag> : t === 'deviate' ? <Tag color="red">偏航</Tag> : <Tag color="default">未确认</Tag>,
+              },
+              {
+                title: '上报调度', dataIndex: 'reported_to_dispatch', width: 90,
+                render: (t, r) => t
+                  ? <Space><Badge status="error" text={<Tag color="orange">已上报 {r.auto_reported ? '(自动)' : ''}</Tag>}</Space></Space>
+                  : <Text type="secondary">未上报</Text>,
+              },
+              {
+                title: '状态', dataIndex: 'status', width: 90,
+                render: (s) => {
+                  const m = geoFenceStatusMap[s] || { color: 'default', label: s }
+                  return <Tag color={m.color}>{m.label}</Tag>
+                },
+              },
+              { title: '位置', dataIndex: 'address', width: 200, ellipsis: true, render: (t) => t || '-' },
+              { title: '发生时间', dataIndex: 'created_at', width: 160, render: (t) => t ? formatDateTime(t) : '-' },
+              {
+                title: '操作', width: 240,
+                render: (_, r) => (
+                  <Space size={4} wrap>
+                    <Button size="small" icon={<EyeOutlined />} onClick={() => handleOpenGeoFenceDetail(r)}>详情</Button>
+                    {(r.status === 'pending') && (
+                      <Button size="small" type="primary" onClick={() => setGeoFenceConfirmModal({ visible: true, alert: r })}>
+                        确认原因
+                      </Button>
+                    )}
+                    {(r.status === 'escalated' || r.status === 'confirmed') && (
+                      <Button size="small" type="primary" danger onClick={() => setGeoFenceResolveModal({ visible: true, alert: r })}>
+                        调度处理
+                      </Button>
+                    )}
+                  </Space>
+                ),
+              },
+            ]}
+            dataSource={geoFenceAlerts}
+            search={false}
+            loading={geoFenceLoading}
+            pagination={{ pageSize: 10, showSizeChanger: true }}
+            rowKey="id"
+            toolBarRender={() => [
+              <Select
+                key="status"
+                allowClear
+                placeholder="状态筛选"
+                style={{ width: 140 }}
+                value={geoFenceFilterStatus}
+                onChange={(v) => { setGeoFenceFilterStatus(v as any) }}
+                size="middle"
+              >
+                {Object.entries(geoFenceStatusMap).map(([k, v]) => (
+                  <Option key={k} value={k}><Tag color={v.color}>{v.label}</Tag></Option>
+                ))}
+              </Select>,
+              <Button key="reload" icon={<ReloadOutlined />} onClick={() => { fetchGeoFenceAlerts(); fetchGeoFenceStats() }}>刷新</Button>,
+            ]}
+          />
+        </ProCard>
+      </Col>
+    </Row>
+  )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 12 }}>
@@ -1429,6 +1708,7 @@ const Escort: React.FC = () => {
               </Text>
               <Tag color="processing">轮询中 {statistics.polling_vehicles} 车</Tag>
               <Tag color="red">待处理 SOS {statistics.pending_sos}</Tag>
+              <Tag color="warning">待确认偏航 {geoFenceStats.pending_alerts}</Tag>
               <Tag color="success">今日排班 {statistics.active_shifts}</Tag>
               <Tag color="blue">视频记录 {statistics.total_videos}</Tag>
             </Space>
@@ -1485,6 +1765,11 @@ const Escort: React.FC = () => {
               key: 'alerts',
               label: <Space><BellOutlined /> SOS 报警 {statistics.pending_sos > 0 && <Badge count={statistics.pending_sos} color="red" style={{ boxShadow: 'none' }} />}</Space>,
               children: renderAlertsTab(),
+            },
+            {
+              key: 'geo-fence',
+              label: <Space><EnvironmentOutlined /> 电子围栏 {geoFenceStats.pending_alerts > 0 && <Badge count={geoFenceStats.pending_alerts} color="orange" style={{ boxShadow: 'none' }} />}</Space>,
+              children: renderGeoFenceTab(),
             },
             {
               key: 'shifts',
@@ -1628,6 +1913,277 @@ const Escort: React.FC = () => {
           )}
         </Space>
       </Modal>
+
+      <Modal
+        title={
+          <Space>
+            <WarningOutlined style={{ color: '#fa8c16', fontSize: 20 }} />
+            <Text strong style={{ fontSize: 16 }}>偏航告警确认</Text>
+            {geoFenceConfirmModal.alert && <Tag color="orange">{geoFenceConfirmModal.alert.plate_number}</Tag>}
+          </Space>
+        }
+        open={geoFenceConfirmModal.visible}
+        onCancel={() => { setGeoFenceConfirmModal({ visible: false, alert: null }); geoFenceConfirmForm.resetFields() }}
+        footer={
+          <Space>
+            <Button onClick={() => { setGeoFenceConfirmModal({ visible: false, alert: null }); geoFenceConfirmForm.resetFields() }}>取消</Button>
+            <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => geoFenceConfirmForm.submit()}>确认提交</Button>
+          </Space>
+        }
+        width={560}
+      >
+        {geoFenceConfirmModal.alert && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="warning"
+              showIcon
+              message={`车辆 ${geoFenceConfirmModal.alert.plate_number} 偏离预设路线 ${geoFenceConfirmModal.alert.distance_from_route_meters?.toFixed(0)} 米`}
+              description={`告警编号: ${geoFenceConfirmModal.alert.alert_no} · 发生时间: ${formatDateTime(geoFenceConfirmModal.alert.created_at)}`}
+            />
+            <Descriptions column={2} bordered size="small">
+              <Descriptions.Item label="偏离距离">
+                <Text type="danger" strong>{geoFenceConfirmModal.alert.distance_from_route_meters?.toFixed(0)} 米</Text>
+                <Text type="secondary"> / {geoFenceConfirmModal.alert.threshold_meters}米阈值</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="告警级别">
+                <Tag color={geoFenceConfirmModal.alert.alert_level === 3 ? 'red' : geoFenceConfirmModal.alert.alert_level === 2 ? 'orange' : 'blue'}>
+                  {geoFenceConfirmModal.alert.alert_level === 3 ? '紧急' : geoFenceConfirmModal.alert.alert_level === 2 ? '关注' : '一般'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="当日累计" span={2}>
+                <Tag color={geoFenceConfirmModal.alert.daily_deviate_count >= 3 ? 'red' : geoFenceConfirmModal.alert.daily_deviate_count >= 2 ? 'orange' : 'blue'}>
+                  {geoFenceConfirmModal.alert.daily_deviate_count} 次
+                </Tag>
+                {geoFenceConfirmModal.alert.daily_deviate_count >= 2 && (
+                  <Text type="danger" style={{ marginLeft: 8, fontSize: 12 }}>
+                    ⚠️ 当日累计偏航已达{geoFenceConfirmModal.alert.daily_deviate_count}次，超过3次将自动上报调度中心
+                  </Text>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="位置" span={2}>{geoFenceConfirmModal.alert.address || '-'}</Descriptions.Item>
+              <Descriptions.Item label="押运员">{geoFenceConfirmModal.alert.escort_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label="司机">{geoFenceConfirmModal.alert.driver_name || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Form form={geoFenceConfirmForm} layout="vertical" onFinish={handleGeoFenceConfirm}>
+              <Form.Item
+                label="确认类型"
+                name="confirm_type"
+                rules={[{ required: true, message: '请选择偏航原因类型' }]}
+                style={{ marginBottom: 12 }}
+              >
+                <Select placeholder="请选择原因类型">
+                  <Option value="detour">
+                    <Tag color="blue">合理绕路</Tag>
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>因施工、拥堵、检查点等合理原因绕行</Text>
+                  </Option>
+                  <Option value="deviate">
+                    <Tag color="red">异常偏航</Tag>
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>不明原因偏离路线，需进一步核实</Text>
+                  </Option>
+                </Select>
+              </Form.Item>
+              <Form.Item
+                label="原因详情"
+                name="reason_detail"
+                rules={[{ required: true, message: '请填写具体原因' }]}
+                style={{ marginBottom: 12 }}
+              >
+                <TextArea rows={3} placeholder="请填写具体的偏航原因，例如：前方高速事故绕行G108国道" showCount maxLength={200} />
+              </Form.Item>
+              <Form.Item label="备注说明" name="note" style={{ marginBottom: 0 }}>
+                <TextArea rows={2} placeholder="可选，其他补充说明" showCount maxLength={100} />
+              </Form.Item>
+            </Form>
+          </Space>
+        )}
+      </Modal>
+
+      <Modal
+        title={
+          <Space>
+            <DashboardOutlined style={{ color: '#eb2f96', fontSize: 20 }} />
+            <Text strong style={{ fontSize: 16 }}>调度处理偏航告警</Text>
+            {geoFenceResolveModal.alert && <Tag color="orange">{geoFenceResolveModal.alert.plate_number}</Tag>}
+          </Space>
+        }
+        open={geoFenceResolveModal.visible}
+        onCancel={() => { setGeoFenceResolveModal({ visible: false, alert: null }); geoFenceResolveForm.resetFields() }}
+        footer={
+          <Space>
+            <Button onClick={() => { setGeoFenceResolveModal({ visible: false, alert: null }); geoFenceResolveForm.resetFields() }}>取消</Button>
+            <Button type="primary" danger icon={<CheckCircleOutlined />} onClick={() => geoFenceResolveForm.submit()}>标记已处理</Button>
+          </Space>
+        }
+        width={560}
+      >
+        {geoFenceResolveModal.alert && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type={geoFenceResolveModal.alert.reported_to_dispatch ? 'error' : 'warning'}
+              showIcon
+              message={geoFenceResolveModal.alert.reported_to_dispatch ? '该偏航告警已自动上报至调度中心，请及时处理' : '处理该偏航告警'}
+              description={`${geoFenceResolveModal.alert.plate_number} 偏离 ${geoFenceResolveModal.alert.distance_from_route_meters?.toFixed(0)}米 · 当日累计 ${geoFenceResolveModal.alert.daily_deviate_count} 次`}
+            />
+            <Descriptions column={2} bordered size="small">
+              <Descriptions.Item label="告警编号" span={2}>{geoFenceResolveModal.alert.alert_no}</Descriptions.Item>
+              <Descriptions.Item label="偏离距离">
+                <Text type="danger" strong>{geoFenceResolveModal.alert.distance_from_route_meters?.toFixed(0)} 米</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="确认原因">
+                {geoFenceResolveModal.alert.deviate_reason === 'detour'
+                  ? <Tag color="blue">绕路</Tag>
+                  : geoFenceResolveModal.alert.deviate_reason === 'deviate'
+                    ? <Tag color="red">偏航</Tag>
+                    : <Tag color="default">未确认</Tag>}
+              </Descriptions.Item>
+              <Descriptions.Item label="确认备注" span={2}>{geoFenceResolveModal.alert.confirm_note || geoFenceResolveModal.alert.resolved_note || '-'}</Descriptions.Item>
+              <Descriptions.Item label="上报调度">
+                {geoFenceResolveModal.alert.reported_to_dispatch ? <Badge status="error" text="是" /> : '否'}
+              </Descriptions.Item>
+              <Descriptions.Item label="押运员">{geoFenceResolveModal.alert.escort_name || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Form form={geoFenceResolveForm} layout="vertical" onFinish={handleGeoFenceResolve}>
+              <Form.Item
+                label="处理说明"
+                name="resolved_note"
+                rules={[{ required: true, message: '请填写处理说明' }]}
+                style={{ marginBottom: 0 }}
+              >
+                <TextArea rows={4} placeholder="请填写调度处理说明，例如：已联系押运员核实情况，确认前方封路绕行，通知司机尽快返回规划路线" showCount maxLength={300} />
+              </Form.Item>
+            </Form>
+          </Space>
+        )}
+      </Modal>
+
+      <Drawer
+        title={
+          <Space>
+            <EnvironmentOutlined style={{ color: '#1677ff' }} />
+            <Text strong>偏航告警详情</Text>
+            {geoFenceDetail && <Tag color="orange">{geoFenceDetail.alert_no}</Tag>}
+          </Space>
+        }
+        placement="right"
+        width={600}
+        onClose={() => setGeoFenceDetail(null)}
+        open={!!geoFenceDetail}
+      >
+        {geoFenceDetail && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Card size="small">
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Statistic title="偏离距离" value={geoFenceDetail.distance_from_route_meters?.toFixed(0)} suffix="米" valueStyle={{ color: '#ff4d4f' }} />
+                </Col>
+                <Col span={12}>
+                  <Statistic title="当日累计" value={geoFenceDetail.daily_deviate_count} suffix="次" valueStyle={{ color: geoFenceDetail.daily_deviate_count >= 3 ? '#ff4d4f' : '#fa8c16' }} />
+                </Col>
+              </Row>
+            </Card>
+            <Descriptions column={2} bordered size="small" title="基本信息">
+              <Descriptions.Item label="告警编号" span={2}>{geoFenceDetail.alert_no}</Descriptions.Item>
+              <Descriptions.Item label="状态">
+                {(() => {
+                  const m = geoFenceStatusMap[geoFenceDetail.status] || { color: 'default', label: geoFenceDetail.status }
+                  return <Tag color={m.color}>{m.label}</Tag>
+                })()}
+              </Descriptions.Item>
+              <Descriptions.Item label="告警级别">
+                <Tag color={geoFenceDetail.alert_level === 3 ? 'red' : geoFenceDetail.alert_level === 2 ? 'orange' : 'blue'}>
+                  {geoFenceDetail.alert_level === 3 ? '紧急' : geoFenceDetail.alert_level === 2 ? '关注' : '一般'}
+                </Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="车牌号">{geoFenceDetail.plate_number}</Descriptions.Item>
+              <Descriptions.Item label="运单号">{geoFenceDetail.waybill_no || '-'}</Descriptions.Item>
+              <Descriptions.Item label="押运员">{geoFenceDetail.escort_name}</Descriptions.Item>
+              <Descriptions.Item label="司机">{geoFenceDetail.driver_name}</Descriptions.Item>
+              <Descriptions.Item label="阈值">{geoFenceDetail.threshold_meters} 米</Descriptions.Item>
+              <Descriptions.Item label="偏离距离" span={2}>
+                <Text type="danger" strong>{geoFenceDetail.distance_from_route_meters?.toFixed(0)} 米</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="当前位置" span={2}>{geoFenceDetail.address || '-'}</Descriptions.Item>
+              <Descriptions.Item label="发生时间" span={2}>{formatDateTime(geoFenceDetail.created_at)}</Descriptions.Item>
+            </Descriptions>
+            <Descriptions column={2} bordered size="small" title="确认与处理">
+              <Descriptions.Item label="确认原因">
+                {geoFenceDetail.deviate_reason === 'detour'
+                  ? <Tag color="blue">绕路</Tag>
+                  : geoFenceDetail.deviate_reason === 'deviate'
+                    ? <Tag color="red">偏航</Tag>
+                    : <Tag color="default">未确认</Tag>}
+              </Descriptions.Item>
+              <Descriptions.Item label="上报调度">
+                {geoFenceDetail.reported_to_dispatch
+                  ? <Space><Badge status="error" text={<Tag color="orange">已上报 {geoFenceDetail.auto_reported ? '(自动)' : ''}</Tag>}</Space>
+                  : <Text type="secondary">未上报</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="确认时间">{geoFenceDetail.confirmed_at ? formatDateTime(geoFenceDetail.confirmed_at) : '-'}</Descriptions.Item>
+              <Descriptions.Item label="处理时间">{geoFenceDetail.resolved_at ? formatDateTime(geoFenceDetail.resolved_at) : '-'}</Descriptions.Item>
+              <Descriptions.Item label="确认备注" span={2}>{geoFenceDetail.confirm_note || '-'}</Descriptions.Item>
+              <Descriptions.Item label="处理说明" span={2}>{geoFenceDetail.resolved_note || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Divider orientation="left" style={{ margin: '8px 0', fontSize: 12 }}>确认处理记录</Divider>
+            {geoFenceLogsLoading ? (
+              <div style={{ textAlign: 'center', padding: 24 }}><LoadingOutlined spin /> 加载中...</div>
+            ) : geoFenceConfirmLogs.length === 0 ? (
+              <Empty description="暂无确认记录" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: 16 }} />
+            ) : (
+              <List
+                size="small"
+                dataSource={geoFenceConfirmLogs}
+                renderItem={(item: any) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      avatar={
+                        <Avatar
+                          icon={item.confirm_type === 'detour' ? <EnvironmentOutlined /> : item.confirm_type === 'deviate' ? <WarningOutlined /> : <CheckCircleOutlined />}
+                          style={{
+                            background: item.confirm_type === 'detour' ? '#1677ff'
+                              : item.confirm_type === 'deviate' ? '#ff4d4f'
+                                : item.confirm_type === 'resolve' ? '#52c41a' : '#8c8c8c'
+                          }}
+                        />
+                      }
+                      title={
+                        <Space>
+                          <Text strong style={{ fontSize: 12 }}>
+                            {item.confirm_type === 'detour' ? '确认：合理绕路'
+                              : item.confirm_type === 'deviate' ? '确认：异常偏航'
+                                : item.confirm_type === 'resolve' ? '调度：处理完成'
+                                  : (item.confirm_type || '操作记录')}
+                          </Text>
+                          {item.confirmed_role && <Tag color="default" style={{ fontSize: 10 }}>{item.confirmed_role}</Tag>}
+                        </Space>
+                      }
+                      description={
+                        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            {formatDateTime(item.confirmed_at || item.created_at)} · {item.confirmed_name || item.confirmed_by || '系统'}
+                          </Text>
+                          {(item.reason_detail || item.note) && <Text style={{ fontSize: 12 }}>{item.reason_detail || item.note}</Text>}
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            )}
+            <Space style={{ justifyContent: 'flex-end', width: '100%' }}>
+              {geoFenceDetail.status === 'pending' && (
+                <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => setGeoFenceConfirmModal({ visible: true, alert: geoFenceDetail })}>
+                  确认原因
+                </Button>
+              )}
+              {(geoFenceDetail.status === 'escalated' || geoFenceDetail.status === 'confirmed') && (
+                <Button type="primary" danger icon={<DashboardOutlined />} onClick={() => setGeoFenceResolveModal({ visible: true, alert: geoFenceDetail })}>
+                  调度处理
+                </Button>
+              )}
+            </Space>
+          </Space>
+        )}
+      </Drawer>
 
       <Drawer
         title={

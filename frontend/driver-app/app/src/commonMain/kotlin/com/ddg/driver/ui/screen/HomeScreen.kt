@@ -23,9 +23,11 @@ import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.LocalGasStation
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Notifications
@@ -34,6 +36,11 @@ import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.AlertDialog
+import androidx.compose.material.Button
+import androidx.compose.material.ButtonDefaults
+import androidx.compose.material.TextField
+import androidx.compose.material.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,6 +57,10 @@ import androidx.compose.ui.unit.sp
 import com.ddg.driver.data.local.AppDataStore
 import com.ddg.driver.data.model.RestCountdown
 import com.ddg.driver.data.model.Waybill
+import com.ddg.driver.data.model.GeoFenceCheckResult
+import com.ddg.driver.data.model.GeoFenceCheckRequest
+import com.ddg.driver.data.model.GeoFenceConfirmRequest
+import com.ddg.driver.data.remote.ApiService
 import com.ddg.driver.domain.usecase.GetCurrentWaybillUseCase
 import com.ddg.driver.domain.usecase.GetRestCountdownUseCase
 import com.ddg.driver.ui.navigation.DriverContext
@@ -79,12 +90,21 @@ fun HomeScreen(
     val dataStore: AppDataStore = getKoin().get()
     val getCurrentWaybillUseCase: GetCurrentWaybillUseCase = getKoin().get()
     val getRestCountdownUseCase: GetRestCountdownUseCase = getKoin().get()
+    val apiService: ApiService = getKoin().get()
     val scope = rememberCoroutineScope()
 
     var waybill by remember { mutableStateOf<Waybill?>(null) }
     var restCountdown by remember { mutableStateOf<RestCountdown?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    var geoFenceLastResult by remember { mutableStateOf<GeoFenceCheckResult?>(null) }
+    var pendingGeoFenceAlert by remember { mutableStateOf<GeoFenceCheckResult?>(null) }
+    var showGeoFenceConfirmDialog by remember { mutableStateOf(false) }
+    var geoFenceConfirmType by remember { mutableStateOf<String?>(null) }
+    var geoFenceReasonDetail by remember { mutableStateOf("") }
+    var geoFenceConfirming by remember { mutableStateOf(false) }
+    var geoFenceErrorMsg by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         scope.launch {
@@ -106,6 +126,66 @@ fun HomeScreen(
                 val result = getRestCountdownUseCase(1, 1)
                 result.onSuccess { restCountdown = it }
             }
+        }
+    }
+
+    LaunchedEffect(waybill) {
+        while (true) {
+            delay(30_000)
+            val wb = waybill ?: continue
+            val vehicleId = wb.vehicle_id ?: continue
+            val waybillId = wb.id ?: continue
+            val lat = wb.current_lat ?: wb.start_lat ?: continue
+            val lng = wb.current_lng ?: wb.start_lng ?: continue
+            scope.launch {
+                runCatching {
+                    apiService.checkGeoFence(
+                        GeoFenceCheckRequest(
+                            vehicle_id = vehicleId,
+                            driver_id = 1,
+                            waybill_id = waybillId,
+                            latitude = lat,
+                            longitude = lng,
+                            address = wb.current_location,
+                            threshold_meters = 500
+                        )
+                    )
+                }.onSuccess { result ->
+                    geoFenceLastResult = result
+                    if (result.is_deviated && result.status == "pending" && result.alert_id > 0) {
+                        if (pendingGeoFenceAlert?.alert_id != result.alert_id) {
+                            pendingGeoFenceAlert = result
+                            showGeoFenceConfirmDialog = true
+                        }
+                    }
+                }.onFailure {
+                    geoFenceErrorMsg = it.message
+                }
+            }
+        }
+    }
+
+    fun submitGeoFenceConfirm(type: String) {
+        val alert = pendingGeoFenceAlert ?: return
+        geoFenceConfirming = true
+        scope.launch {
+            runCatching {
+                apiService.confirmGeoFenceAlert(
+                    GeoFenceConfirmRequest(
+                        alert_id = alert.alert_id,
+                        confirm_type = type,
+                        reason_detail = geoFenceReasonDetail.ifBlank { null }
+                    )
+                )
+            }.onSuccess {
+                showGeoFenceConfirmDialog = false
+                pendingGeoFenceAlert = null
+                geoFenceConfirmType = null
+                geoFenceReasonDetail = ""
+            }.onFailure {
+                geoFenceErrorMsg = it.message
+            }
+            geoFenceConfirming = false
         }
     }
 
@@ -189,8 +269,33 @@ fun HomeScreen(
             }
 
             item {
+                GeoFenceSection(
+                    lastResult = geoFenceLastResult,
+                    pendingAlert = pendingGeoFenceAlert,
+                    onConfirmClick = { showGeoFenceConfirmDialog = true }
+                )
+            }
+
+            item {
                 SOSButton(onClick = { })
             }
+        }
+
+        if (showGeoFenceConfirmDialog && pendingGeoFenceAlert != null) {
+            GeoFenceConfirmDialog(
+                alert = pendingGeoFenceAlert!!,
+                confirmType = geoFenceConfirmType,
+                reasonDetail = geoFenceReasonDetail,
+                confirming = geoFenceConfirming,
+                onSelectType = { geoFenceConfirmType = it },
+                onReasonChange = { geoFenceReasonDetail = it },
+                onSubmit = { type -> submitGeoFenceConfirm(type) },
+                onDismiss = {
+                    if (!geoFenceConfirming) {
+                        showGeoFenceConfirmDialog = false
+                    }
+                }
+            )
         }
     }
 }
@@ -577,4 +682,412 @@ private fun ApproachingLimitBanner(
             }
         }
     }
+}
+
+@Composable
+private fun GeoFenceSection(
+    lastResult: GeoFenceCheckResult?,
+    pendingAlert: GeoFenceCheckResult?,
+    onConfirmClick: () -> Unit
+) {
+    val isDeviated = lastResult?.is_deviated == true || pendingAlert != null
+    val dist = lastResult?.distance_from_route_meters ?: pendingAlert?.distance_from_route_meters ?: 0.0
+    val threshold = lastResult?.threshold_meters ?: pendingAlert?.threshold_meters ?: 500
+    val dailyCount = lastResult?.daily_deviate_count ?: pendingAlert?.daily_deviate_count ?: 0
+    val autoReported = lastResult?.auto_reported == true || pendingAlert?.auto_reported == true
+
+    val bgColor = when {
+        autoReported -> DDGRed.copy(alpha = 0.12f)
+        isDeviated -> DDGWarning.copy(alpha = 0.15f)
+        else -> DDGGray
+    }
+    val titleColor = when {
+        autoReported -> DDGRed
+        isDeviated -> DDGDanger
+        else -> DDGSuccess
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (pendingAlert != null) Modifier.clickable { onConfirmClick() } else Modifier),
+        backgroundColor = bgColor,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = null,
+                        tint = titleColor,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "电子围栏监控",
+                        style = MaterialTheme.typography.h5,
+                        color = titleColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                if (pendingAlert != null) {
+                    Card(
+                        backgroundColor = DDGRed.copy(alpha = 0.25f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "待确认 →",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            style = MaterialTheme.typography.caption,
+                            color = DDGRed,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else if (autoReported) {
+                    Card(
+                        backgroundColor = DDGRed.copy(alpha = 0.25f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "已上报调度",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            style = MaterialTheme.typography.caption,
+                            color = DDGRed,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceAround
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = String.format("%.0f", dist),
+                        style = MaterialTheme.typography.h4,
+                        fontWeight = FontWeight.Bold,
+                        color = if (dist > threshold) DDGDanger else DDGTextPrimary
+                    )
+                    Text(
+                        text = "偏离距离(米)",
+                        style = MaterialTheme.typography.caption,
+                        color = DDGTextSecondary
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "$threshold",
+                        style = MaterialTheme.typography.h4,
+                        fontWeight = FontWeight.Bold,
+                        color = DDGTextPrimary
+                    )
+                    Text(
+                        text = "告警阈值(米)",
+                        style = MaterialTheme.typography.caption,
+                        color = DDGTextSecondary
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "$dailyCount",
+                        style = MaterialTheme.typography.h4,
+                        fontWeight = FontWeight.Bold,
+                        color = if (dailyCount >= 3) DDGRed else if (dailyCount >= 2) DDGWarning else DDGTextPrimary
+                    )
+                    Text(
+                        text = "当日累计(次)",
+                        style = MaterialTheme.typography.caption,
+                        color = DDGTextSecondary
+                    )
+                }
+            }
+
+            if (isDeviated) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = if (autoReported) DDGRed else DDGDanger,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = when {
+                            autoReported -> "⚠️ 当日累计偏航已达${dailyCount}次，系统已自动上报调度中心！"
+                            dailyCount >= 2 -> "⚠️ 当日累计偏航${dailyCount}次，再偏航${3 - dailyCount}次将自动上报调度！"
+                            else -> "⚠️ 当前偏离预设路线 ${String.format("%.0f", dist)} 米，请押运员及时确认原因"
+                        },
+                        style = MaterialTheme.typography.caption,
+                        color = if (autoReported) DDGRed else DDGDanger
+                    )
+                }
+            } else {
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = DDGSuccess,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "路线正常，车辆正在沿预设路线行驶",
+                        style = MaterialTheme.typography.caption,
+                        color = DDGSuccess
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterialApi::class)
+@Composable
+private fun GeoFenceConfirmDialog(
+    alert: GeoFenceCheckResult,
+    confirmType: String?,
+    reasonDetail: String,
+    confirming: Boolean,
+    onSelectType: (String) -> Unit,
+    onReasonChange: (String) -> Unit,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = DDGRed,
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "偏航告警确认",
+                    fontWeight = FontWeight.Bold,
+                    color = DDGRed
+                )
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = DDGWarning.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "偏离距离：${String.format("%.0f", alert.distance_from_route_meters)} 米 / ${alert.threshold_meters}米阈值",
+                            style = MaterialTheme.typography.body2,
+                            color = DDGDanger,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "告警编号：${alert.alert_no ?: "(无)"}",
+                            style = MaterialTheme.typography.caption,
+                            color = DDGTextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "当日累计偏航：${alert.daily_deviate_count} 次" + if (alert.daily_deviate_count >= 2) "（已接近自动上报阈值3次）" else "",
+                            style = MaterialTheme.typography.caption,
+                            color = if (alert.daily_deviate_count >= 2) DDGRed else DDGWarning
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "请选择偏航原因：",
+                    style = MaterialTheme.typography.body2,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(80.dp)
+                            .clickable(enabled = !confirming) { onSelectType("detour") },
+                        backgroundColor = if (confirmType == "detour") DDGSuccess.copy(alpha = 0.15f) else DDGGray,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = if (confirmType == "detour") 2.dp else 1.dp,
+                            color = if (confirmType == "detour") DDGSuccess else DDGGray
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Route,
+                                contentDescription = null,
+                                tint = DDGSuccess,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "合理绕路",
+                                style = MaterialTheme.typography.body2,
+                                color = DDGSuccess,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "施工/拥堵/检查",
+                                style = MaterialTheme.typography.overline,
+                                color = DDGTextSecondary
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(80.dp)
+                            .clickable(enabled = !confirming) { onSelectType("deviate") },
+                        backgroundColor = if (confirmType == "deviate") DDGRed.copy(alpha = 0.15f) else DDGGray,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = if (confirmType == "deviate") 2.dp else 1.dp,
+                            color = if (confirmType == "deviate") DDGRed else DDGGray
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = DDGRed,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "异常偏航",
+                                style = MaterialTheme.typography.body2,
+                                color = DDGRed,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "不明原因偏离",
+                                style = MaterialTheme.typography.overline,
+                                color = DDGTextSecondary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "具体说明（必填）",
+                    style = MaterialTheme.typography.body2,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                TextField(
+                    value = reasonDetail,
+                    onValueChange = onReasonChange,
+                    enabled = !confirming,
+                    modifier = Modifier.fillMaxWidth().height(100.dp),
+                    placeholder = {
+                        Text(
+                            text = "请填写具体原因，例如：前方G5高速事故封路，绕行G108国道",
+                            style = MaterialTheme.typography.caption,
+                            color = DDGTextSecondary
+                        )
+                    },
+                    colors = TextFieldDefaults.textFieldColors(
+                        backgroundColor = DDGGray,
+                        focusedIndicatorColor = DDGWarning,
+                        unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                )
+                if (alert.daily_deviate_count >= 2) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = DDGRed.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = DDGRed,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "当日累计偏航已达${alert.daily_deviate_count}次，若再偏航${3 - alert.daily_deviate_count}次，系统将自动上报调度中心！",
+                                style = MaterialTheme.typography.caption,
+                                color = DDGRed
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val type = confirmType ?: return@Button
+                    if (reasonDetail.isBlank()) return@Button
+                    onSubmit(type)
+                },
+                enabled = !confirming && confirmType != null && reasonDetail.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    backgroundColor = if (confirmType == "detour") DDGSuccess else DDGRed
+                )
+            ) {
+                if (confirming) {
+                    CircularProgressIndicator(
+                        color = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("提交中...", color = androidx.compose.ui.graphics.Color.White)
+                } else {
+                    Text(
+                        text = "确认提交",
+                        color = androidx.compose.ui.graphics.Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            Button(
+                onClick = onDismiss,
+                enabled = !confirming,
+                colors = ButtonDefaults.buttonColors(backgroundColor = DDGGray)
+            ) {
+                Text("稍后处理", color = DDGTextPrimary)
+            }
+        },
+        shape = RoundedCornerShape(14.dp)
+    )
 }

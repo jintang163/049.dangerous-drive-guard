@@ -15,6 +15,9 @@ import type {
   EvidenceRecord,
   ServiceArea,
   StatData,
+  GeoFenceAlertItem,
+  GeoFenceStats,
+  GeoFenceCheckResult,
 } from '@/store/app'
 
 export interface ApiResponse<T = any> {
@@ -461,6 +464,36 @@ export const escortApi = {
     api.post<any>(`/escort/polling/${id}/end`, { polling_count }),
   getEscortVehiclesForPolling: (params?: { escort_id?: number }) =>
     api.get<{ list: any[]; total: number }>('/escort/polling/vehicles', params),
+
+  getGeoFenceStats: (params?: { org_id?: number }) =>
+    api.get<GeoFenceStats>('/escort/geo-fence/statistics', params),
+  checkGeoFence: (data: {
+    vehicle_id: number
+    driver_id?: number
+    waybill_id?: number
+    latitude: number
+    longitude: number
+    address?: string
+    threshold_meters?: number
+  }) => api.post<GeoFenceCheckResult>('/escort/geo-fence/check', data),
+  getGeoFenceAlerts: (params?: PageParams & {
+    vehicle_id?: number
+    waybill_id?: number
+    escort_id?: number
+    status?: string
+  }) => api.getPage<GeoFenceAlertItem>('/escort/geo-fence/alerts', params),
+  confirmGeoFenceAlert: (data: {
+    alert_id: number
+    confirm_type: 'detour' | 'deviate'
+    reason_detail?: string
+    note?: string
+    latitude?: number
+    longitude?: number
+  }) => api.post<any>('/escort/geo-fence/alerts/confirm', data),
+  resolveGeoFenceAlert: (id: number, resolved_note: string) =>
+    api.post<any>(`/escort/geo-fence/alerts/${id}/resolve`, { resolved_note }),
+  getGeoFenceConfirmLogs: (params?: PageParams & { alert_id?: number; vehicle_id?: number }) =>
+    api.getPage<any>('/escort/geo-fence/confirm-logs', params),
 }
 
 export const rescueApi = {

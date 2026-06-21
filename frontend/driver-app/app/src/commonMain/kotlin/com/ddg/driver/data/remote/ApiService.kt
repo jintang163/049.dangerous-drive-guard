@@ -19,6 +19,10 @@ import com.ddg.driver.data.model.ServiceAreaReview
 import com.ddg.driver.data.model.RecommendRequest
 import com.ddg.driver.data.model.ServiceAreaRecommendation
 import com.ddg.driver.data.model.ServiceAreaRealtimeStatus
+import com.ddg.driver.data.model.GeoFenceCheckRequest
+import com.ddg.driver.data.model.GeoFenceCheckResult
+import com.ddg.driver.data.model.GeoFenceConfirmRequest
+import com.ddg.driver.data.model.GeoFenceAlertItem
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -217,6 +221,37 @@ class ApiService(private val client: HttpClient) {
     suspend fun rejectRecommendation(id: Long): Map<String, Any> {
         return client.post {
             url("${ApiClient.BASE_URL}/service-areas/recommendations/$id/reject")
+        }
+    }
+
+    suspend fun checkGeoFence(request: GeoFenceCheckRequest): GeoFenceCheckResult {
+        return client.post {
+            url("${ApiClient.BASE_URL}/escort/geo-fence/check")
+            setBody(request)
+        }
+    }
+
+    suspend fun confirmGeoFenceAlert(request: GeoFenceConfirmRequest): Any {
+        return client.post {
+            url("${ApiClient.BASE_URL}/escort/geo-fence/alerts/confirm")
+            setBody(request)
+        }
+    }
+
+    suspend fun listGeoFenceAlerts(
+        vehicleId: Long? = null,
+        status: String? = null,
+        page: Int = 1,
+        pageSize: Int = 20
+    ): Any {
+        return client.get {
+            url("${ApiClient.BASE_URL}/escort/geo-fence/alerts")
+            url {
+                vehicleId?.let { parameters.append("vehicle_id", it.toString()) }
+                status?.let { parameters.append("status", it) }
+                parameters.append("page", page.toString())
+                parameters.append("page_size", pageSize.toString())
+            }
         }
     }
 }

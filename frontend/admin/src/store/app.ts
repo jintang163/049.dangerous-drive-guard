@@ -175,6 +175,69 @@ export interface EscortEvent {
   driver_name?: string
 }
 
+export interface GeoFenceAlertItem {
+  id: number
+  alert_no: string
+  vehicle_id: number
+  plate_number: string
+  driver_id: number
+  driver_name: string
+  escort_id: number
+  escort_name: string
+  waybill_id: number
+  waybill_no: string
+  route_plan_id: number
+  latitude: number
+  longitude: number
+  address: string
+  distance_from_route_meters: number
+  threshold_meters: number
+  alert_level: 1 | 2 | 3
+  status: 'pending' | 'confirmed' | 'escalated' | 'resolved'
+  deviate_reason?: 'detour' | 'deviate'
+  confirm_note?: string
+  confirmed_by?: number
+  confirmed_role?: string
+  confirmed_at?: string
+  reported_to_dispatch: boolean
+  reported_at?: string
+  resolved_by?: number
+  resolved_note?: string
+  resolved_at?: string
+  daily_deviate_count: number
+  nearest_route_point?: { lat: number; lng: number }
+  snapshot_url?: string
+  auto_reported?: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface GeoFenceStats {
+  total_alerts: number
+  pending_alerts: number
+  today_alerts: number
+  reported_alerts: number
+  resolved_alerts: number
+  total_confirm_logs: number
+  detour_count: number
+  deviate_count: number
+  auto_reported_count: number
+}
+
+export interface GeoFenceCheckResult {
+  alert_id: number
+  alert_no: string
+  is_deviated: boolean
+  distance_from_route_meters: number
+  threshold_meters: number
+  alert_level: number
+  daily_deviate_count: number
+  auto_reported: boolean
+  status: string
+  nearest_route_point?: { lat: number; lng: number }
+  message: string
+}
+
 export interface RescueRequest {
   id: number
   rescue_no: string

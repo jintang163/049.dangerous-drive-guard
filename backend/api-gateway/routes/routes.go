@@ -219,6 +219,16 @@ func Register(h *server.Hertz) {
 				polling.POST("/:id/end", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.EndPollingSession)
 				polling.GET("/vehicles", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.GetEscortVehiclesForPolling)
 			}
+
+			geoFence := escort.Group("/geo-fence")
+			{
+				geoFence.GET("/statistics", escortHttp.GetGeoFenceStats)
+				geoFence.POST("/check", escortHttp.CheckGeoFenceDeviation)
+				geoFence.GET("/alerts", escortHttp.GetGeoFenceAlerts)
+				geoFence.POST("/alerts/confirm", middleware.RoleAuth("admin", "dispatcher", "escort", "driver"), escortHttp.ConfirmGeoFenceAlert)
+				geoFence.POST("/alerts/:id/resolve", middleware.RoleAuth("admin", "dispatcher"), escortHttp.ResolveGeoFenceAlert)
+				geoFence.GET("/confirm-logs", escortHttp.GetGeoFenceConfirmLogs)
+			}
 		}
 
 		serviceAreas := api.Group("/service-areas", middleware.JWTAuth())
