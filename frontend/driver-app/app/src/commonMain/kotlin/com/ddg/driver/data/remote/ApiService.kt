@@ -4,6 +4,7 @@ import com.ddg.driver.data.model.AlarmInfo
 import com.ddg.driver.data.model.FatigueMetrics
 import com.ddg.driver.data.model.LoginRequest
 import com.ddg.driver.data.model.LoginResponse
+import com.ddg.driver.data.model.ReplanConfirmRequest
 import com.ddg.driver.data.model.RoutePlan
 import com.ddg.driver.data.model.ServiceArea
 import com.ddg.driver.data.model.Waybill
@@ -31,6 +32,41 @@ class ApiService(private val client: HttpClient) {
     suspend fun startNavigation(waybillId: String): RoutePlan {
         return client.post {
             url("${ApiClient.BASE_URL}/navigation/start/$waybillId")
+        }
+    }
+
+    suspend fun getRoutePlan(routePlanId: Long): RoutePlan {
+        return client.get {
+            url("${ApiClient.BASE_URL}/route-plans/$routePlanId")
+        }
+    }
+
+    suspend fun confirmReplan(replanId: Long, action: String, note: String? = null): Any {
+        return client.post {
+            url("${ApiClient.BASE_URL}/replans/$replanId/confirm")
+            setBody(ReplanConfirmRequest(action = action, note = note))
+        }
+    }
+
+    suspend fun listReplanHistory(waybillId: Long? = null, status: String? = null, page: Int = 1, pageSize: Int = 20): Any {
+        return client.get {
+            url("${ApiClient.BASE_URL}/replans")
+            url {
+                waybillId?.let { parameters.append("waybill_id", it.toString()) }
+                status?.let { parameters.append("status", it) }
+                parameters.append("page", page.toString())
+                parameters.append("page_size", pageSize.toString())
+            }
+        }
+    }
+
+    suspend fun pullActiveRestrictedAreas(sinceVersion: Long? = null, hazardClass: String? = null): Any {
+        return client.get {
+            url("${ApiClient.BASE_URL}/restricted-areas/sync/pull")
+            url {
+                sinceVersion?.let { parameters.append("since_version", it.toString()) }
+                hazardClass?.let { parameters.append("hazard_class", it) }
+            }
         }
     }
 

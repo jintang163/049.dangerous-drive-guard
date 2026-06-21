@@ -20,6 +20,7 @@ class ApiClient(private val dataStore: AppDataStore) {
 
     companion object {
         const val BASE_URL = "https://api.ddg.example.com/v1"
+        const val WS_BASE_URL = "wss://api.ddg.example.com"
         const val CONNECT_TIMEOUT = 30_000L
         const val REQUEST_TIMEOUT = 60_000L
     }
@@ -46,6 +47,20 @@ class ApiClient(private val dataStore: AppDataStore) {
 
         sendPipeline.intercept(HttpSendPipeline.Before) {
             context.addAuthHeader(context.builder)
+        }
+    }
+
+    val wsClient: HttpClient = HttpClient {
+        install(io.ktor.client.plugins.websocket.WebSockets) {
+            pingInterval = 30_000
+        }
+        install(HttpTimeout) {
+            connectTimeoutMillis = CONNECT_TIMEOUT
+            requestTimeoutMillis = REQUEST_TIMEOUT
+        }
+        install(Logging) {
+            logger = Logger.SIMPLE
+            level = LogLevel.HEADERS
         }
     }
 

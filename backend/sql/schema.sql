@@ -689,3 +689,82 @@ INSERT INTO rescue_resources (resource_type, name, org_name, contact_person, con
 ('hazmat_team', '市危化品应急处置中心', '市应急管理局', '李主任', '010-12350', '北京市', '北京市', '丰台区丰台路58号', 39.8550, 116.2880, 50.0, 1),
 ('ambulance', '120急救中心城东分站', '市急救中心', '张站长', '120', '北京市', '北京市', '东城区东四十条27号', 39.9400, 116.4250, 25.0, 1),
 ('tow_truck', '华泰道路救援公司', '华泰汽车服务', '刘经理', '400-8080-000', '北京市', '北京市', '通州区新华大街100号', 39.9100, 116.6580, 40.0, 1);
+
+-- ============================================================
+-- 禁行区扩展表（已合并主迁移）
+-- 来源: restricted_area_extension.sql
+-- ============================================================
+SOURCE restricted_area_extension.sql;
+
+-- ============================================================
+-- 实时动态重规划模块扩展表（已合并主迁移）
+-- 来源: realtime_replan_extension.sql
+-- ============================================================
+SOURCE realtime_replan_extension.sql;
+
+-- ============================================================
+-- 外部路况接入说明
+-- ============================================================
+-- Webhook 接口地址: POST /api/v1/traffic/webhook/import
+-- 认证:           X-Webhook-Token: <配置文件 traffic.webhook_token>
+-- 支持数据源:     高德开放平台交通事件 / 百度地图交通事件 / 交管12123 / 地方交警公开接口
+--
+-- 请求体示例 (JSON 数组批量 / 单条):
+-- [
+--   {
+--     "event_type": "congestion",           -- congestion/accident/road_closure/construction
+--     "event_level": 2,                     -- 1轻微 2中等 3严重
+--     "title": "G6京藏高速清河桥段拥堵",
+--     "description": "详细描述...",
+--     "source": "amap_traffic_v4",          -- 来源标识: amap/baidu/traffic_12123/report
+--     "road_name": "G6京藏高速",
+--     "start_point": {"type":"Point","coordinates":[116.33,40.05]},
+--     "end_point":   {"type":"Point","coordinates":[116.30,40.11]},
+--     "affected_geometry": {                 -- GeoJSON Point/LineString/Polygon
+--         "type":"LineString",
+--         "coordinates":[[116.35,40.05],[116.33,40.08],[116.31,40.11]]
+--     },
+--     "center_lat": 40.08,  "center_lng": 116.33,
+--     "affected_length_km": 6.5,
+--     "congestion_level": 3,                 -- 1畅通 2缓行 3拥堵 4严重
+--     "avg_speed_kmh": 18.5,
+--     "duration_minutes": 25,
+--     "started_at": "2026-06-21T08:15:00+08:00",
+--     "expected_end_at": "2026-06-21T11:00:00+08:00",
+--     "related_official_id": "AMAP-TE-20260621-000123"
+--   }
+-- ]
+--
+-- 响应格式:
+-- {
+--   "code": 0,
+--   "message": "success",
+--   "data": {
+--     "accepted": 1,
+--     "ignored": 0,
+--     "errors": []
+--   }
+-- }
+
+-- ============================================================
+-- 路况事件常用查询SQL模板
+-- ============================================================
+-- 1. 获取所有活跃事件 (用于地图叠加 & 扫描器):
+-- SELECT id,event_no,event_type,event_level,title,road_name,center_lat,center_lng,
+--        congestion_level,avg_speed_kmh,affected_length_km,status
+-- FROM traffic_events WHERE status='active'
+--   AND (actual_end_at IS NULL OR actual_end_at > NOW());
+--
+-- 2. 查询某运单近30天重规划历史:
+-- SELECT replan_no,waybill_no,vehicle_plate,trigger_type,trigger_reason,
+--        distance_delta,duration_delta,status,created_at
+-- FROM route_replan_records WHERE waybill_id=? AND created_at>=DATE_SUB(NOW(),INTERVAL 30 DAY)
+-- ORDER BY created_at DESC;
+--
+-- 3. 重规划统计: 按月分组
+-- SELECT DATE_FORMAT(created_at,'%Y-%m') month,
+--        trigger_type, status, COUNT(*) cnt
+-- FROM route_replan_records
+-- GROUP BY DATE_FORMAT(created_at,'%Y-%m'), trigger_type, status
+-- ORDER BY month DESC;
+

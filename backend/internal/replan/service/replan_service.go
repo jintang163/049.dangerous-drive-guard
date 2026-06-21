@@ -378,6 +378,19 @@ func (s *ReplanService) TriggerReplan(ctx context.Context, req *model.ReplanTrig
 		logger.Sugar.Warnf("generate candidate routes failed: err=%v", err)
 	}
 
+	if len(candidates) == 0 {
+		s.db.WithContext(ctx).Delete(record)
+		return nil, fmt.Errorf("生成候选路线失败：无可绕行方案，请稍后重试或手动规划")
+	}
+
+	for _, c := range candidates {
+		c.ReplanRecordID = record.ID
+	}
+	if err := s.db.WithContext(ctx).Create(candidates).Error; err != nil {
+		s.db.WithContext(ctx).Delete(record)
+		return nil, fmt.Errorf("候选路线持久化失败: %v", err)
+	}
+
 	bestDuration := origRemainingDur
 	bestDistance := origRemainingDist
 	if bestCandidate != nil {
@@ -388,13 +401,13 @@ func (s *ReplanService) TriggerReplan(ctx context.Context, req *model.ReplanTrig
 	record.NewDistanceRemaining = bestDistance
 	record.DistanceDelta = bestDistance - origRemainingDist
 	record.DurationDelta = bestDuration - origRemainingDur
-	s.db.WithContext(ctx).Save(record)
-
 	record.CandidateRoutes = candidates
 
 	notifiedAt := time.Now()
 	record.NotifiedAt = &notifiedAt
-	s.db.WithContext(ctx).Save(record)
+	if err := s.db.WithContext(ctx).Save(record).Error; err != nil {
+		return nil, err
+	}
 
 	s.pushReplanNotification(ctx, record, candidates, triggerEvent)
 
@@ -651,14 +664,17 @@ func (s *ReplanService) ConfirmReplan(ctx context.Context, recordID int64, actio
 	switch action {
 	case "confirm":
 		var wb model.Waybill
-		if err := s.db.WithContext(ctx).First(&wb, record.WaybillID).Error; err == nil {
-			newPlanID, err := s.applyBestRoutePlan(ctx, &record, &wb, driverID)
-			if err != nil {
-				logger.Sugar.Warnf("apply best route plan failed: err=%v", err)
-			} else if newPlanID > 0 {
-				record.NewRoutePlanID = newPlanID
-			}
+		if err := s.db.WithContext(ctx).First(&wb, record.WaybillID).Error; err != nil {
+			return nil, fmt.Errorf("关联运单不存在: %v", err)
 		}
+		newPlanID, err := s.applyBestRoutePlan(ctx, &record, &wb, driverID)
+		if err != nil {
+			return nil, fmt.Errorf("应用新路线失败: %v", err)
+		}
+		if newPlanID <= 0 {
+			return nil, fmt.Errorf("应用新路线失败：无可用候选路线")
+		}
+		record.NewRoutePlanID = newPlanID
 		record.Status = model.ReplanStatusConfirmed
 		record.DriverConfirmAt = &now
 		record.AppliedAt = &now
@@ -682,9 +698,15 @@ func (s *ReplanService) ConfirmReplan(ctx context.Context, recordID int64, actio
 // 将最优候选路线保存为正式路线规划，并更新运单引用
 func (s *ReplanService) applyBestRoutePlan(ctx context.Context, record *model.RouteReplanRecord, wb *model.Waybill, driverID *int64) (int64, error) {
 	var candidates []*model.ReplanCandidateRoute
-	s.db.WithContext(ctx).Where("replan_record_id = ?", record.ID).
+	if err := s.db.WithContext(ctx).Where("replan_record_id = ?", record.ID).
 		Order("is_recommended DESC, rank_order ASC").
-		Find(&candidates)
+		Find(&candidates).Error; err != nil {
+		return 0, fmt.Errorf("加载候选路线失败: %v", err)
+	}
+
+	if len(candidates) == 0 {
+		return 0, fmt.Errorf("无候选路线数据，请重新触发重规划")
+	}
 
 	var best *model.ReplanCandidateRoute
 	for _, c := range candidates {
@@ -693,11 +715,8 @@ func (s *ReplanService) applyBestRoutePlan(ctx context.Context, record *model.Ro
 			break
 		}
 	}
-	if best == nil && len(candidates) > 0 {
-		best = candidates[0]
-	}
 	if best == nil {
-		return 0, nil
+		best = candidates[0]
 	}
 
 	var path []model.GeoPoint
@@ -889,6 +908,152 @@ func (s *ReplanService) GetReplanStatistics(ctx context.Context, orgID int64, da
 	stats["avg_delay_minutes"] = math.Round(avgDelayMin*100) / 100
 
 	return stats, nil
+}
+
+// ============================================================
+// 外部路况 Webhook 批量导入
+// ============================================================
+
+func (s *ReplanService) ImportTrafficEventsFromWebhook(ctx context.Context, items []*model.WebhookTrafficEvent) (*model.WebhookImportResponse, error) {
+	result := &model.WebhookImportResponse{
+		Accepted: 0,
+		Ignored:  0,
+		Errors:   make(map[string]string),
+	}
+
+	for idx, it := range items {
+		key := it.RelatedOfficialID
+		if key == "" {
+			key = fmt.Sprintf("%s:%s:%s", it.Source, it.Title, it.StartedAt)
+		}
+
+		var existing int64
+		q := s.db.WithContext(ctx).Model(&model.TrafficEvent{})
+		if it.RelatedOfficialID != "" {
+			q = q.Where("related_official_id = ?", it.RelatedOfficialID)
+		} else {
+			q = q.Where("source = ? AND title = ? AND started_at >= ? AND started_at <= ?",
+				it.Source, it.Title,
+				parseRFC3339OrNow(it.StartedAt).Add(-2*time.Hour),
+				parseRFC3339OrNow(it.StartedAt).Add(2*time.Hour))
+		}
+		q.Count(&existing)
+		if existing > 0 {
+			result.Ignored++
+			continue
+		}
+
+		if it.Title == "" || it.EventType == "" {
+			result.Errors[fmt.Sprintf("item_%d", idx)] = "缺少必填字段 title/event_type"
+			continue
+		}
+
+		centerLat := float64OrDefault(it.CenterLat, 0)
+		centerLng := float64OrDefault(it.CenterLng, 0)
+		if (centerLat == 0 || centerLng == 0) && it.AffectedGeometry != nil {
+			centerLat, centerLng = extractCenterFromGeoJSON(*it.AffectedGeometry)
+		}
+
+		eventNo := fmt.Sprintf("TE%s", strings.ToUpper(strings.ReplaceAll(uuid.New().String()[:12], "-", "")))
+		evt := &model.TrafficEvent{
+			EventNo:          eventNo,
+			EventType:        model.TrafficEventType(it.EventType),
+			EventLevel:       it.EventLevel,
+			Title:            it.Title,
+			Description:      it.Description,
+			Source:           it.Source,
+			RoadName:         it.RoadName,
+			CenterLat:        centerLat,
+			CenterLng:        centerLng,
+			AffectedLengthKm: float64OrDefault(it.AffectedLengthKm, 0),
+			CongestionLevel:  intOrDefault(it.CongestionLevel, 0),
+			AvgSpeedKmh:      float64OrDefault(it.AvgSpeedKmh, 0),
+			DurationMinutes:  intOrDefault(it.DurationMinutes, 0),
+			StartedAt:        parseRFC3339OrNow(it.StartedAt),
+			ExpectedEndAt:    parseRFC3339OrNil(it.ExpectedEndAt),
+			Status:           model.TrafficEventActive,
+			RelatedOfficialID: it.RelatedOfficialID,
+		}
+		if it.StartPoint != nil {
+			evt.StartPoint = *it.StartPoint
+		}
+		if it.EndPoint != nil {
+			evt.EndPoint = *it.EndPoint
+		}
+		if it.AffectedGeometry != nil {
+			evt.AffectedGeometry = *it.AffectedGeometry
+		}
+		if it.ExtraInfo != nil {
+			evt.ExtraInfo = *it.ExtraInfo
+		}
+
+		if err := s.db.WithContext(ctx).Create(evt).Error; err != nil {
+			result.Errors[fmt.Sprintf("item_%d_%s", idx, key)] = err.Error()
+			continue
+		}
+
+		go s.broadcastEvent(evt)
+
+		result.Accepted++
+	}
+
+	return result, nil
+}
+
+func (s *ReplanService) broadcastEvent(evt *model.TrafficEvent) {
+	hub := monitorWs.GetHub()
+	hub.BroadcastTrafficEvent(evt)
+}
+
+func float64OrDefault(v *float64, def float64) float64 {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+func intOrDefault(v *int, def int) int {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+func parseRFC3339OrNow(s string) time.Time {
+	if s == "" {
+		return time.Now()
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Now()
+}
+func parseRFC3339OrNil(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return &t
+	}
+	return nil
+}
+func extractCenterFromGeoJSON(g JSON) (float64, float64) {
+	raw := string(g)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return 0, 0
+	}
+	coords, ok := obj["coordinates"]
+	if !ok {
+		return 0, 0
+	}
+	switch c := coords.(type) {
+	case []interface{}:
+		if len(c) >= 2 {
+			lng, _ := c[0].(float64)
+			lat, _ := c[1].(float64)
+			return lat, lng
+		}
+	}
+	return 0, 0
 }
 
 // ============================================================

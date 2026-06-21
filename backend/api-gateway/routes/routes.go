@@ -152,6 +152,9 @@ func Register(h *server.Hertz) {
 			}
 		}
 
+		// Webhook 免鉴权（仅校验 X-Webhook-Token）
+		api.POST("/traffic/webhook/import", replanHttp.WebhookImport)
+
 		traffic := api.Group("/traffic", middleware.JWTAuth())
 		{
 			traffic.GET("/events", replanHttp.ListTrafficEvents)

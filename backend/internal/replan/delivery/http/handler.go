@@ -2,12 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
 	"github.com/cloudwego/hertz/pkg/app"
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	replanSvc "github.com/dangerous-drive-guard/backend/internal/replan/service"
+	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
 
@@ -186,4 +188,46 @@ func GetReplanStatistics(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response.Success(c, stats)
+}
+
+// WebhookImport 外部路况批量接入（高德/百度/交管等官方接口）
+// 认证: X-Webhook-Token header 匹配配置的 token
+// 支持单个 JSON 或 JSON 数组
+func WebhookImport(ctx context.Context, c *app.RequestContext) {
+	initService()
+
+	token := string(c.GetHeader("X-Webhook-Token"))
+	if token == "" {
+		token = c.Query("token")
+	}
+	expectedToken := config.GlobalConfig().Traffic.WebhookToken
+	if token == "" || token != expectedToken {
+		response.Forbidden(c, "无效的 Webhook Token")
+		return
+	}
+
+	rawBody := c.Request.Body()
+	var items []*model.WebhookTrafficEvent
+
+	var single model.WebhookTrafficEvent
+	if err := json.Unmarshal(rawBody, &single); err == nil {
+		items = append(items, &single)
+	} else {
+		if err := json.Unmarshal(rawBody, &items); err != nil || len(items) == 0 {
+			response.BadRequest(c, "请求体必须为 JSON 或 JSON 数组")
+			return
+		}
+	}
+
+	if len(items) > 500 {
+		response.BadRequest(c, "单次导入不超过 500 条")
+		return
+	}
+
+	result, err := replanService.ImportTrafficEventsFromWebhook(ctx, items)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, result)
 }

@@ -38,6 +38,8 @@ mq:
       route_event: DDG_ROUTE_EVENT
       waybill_event: DDG_WAYBILL_EVENT
       restricted_area_change: DDG_RESTRICTED_AREA_CHANGE
+      traffic_event: DDG_TRAFFIC_EVENT
+      route_replan: DDG_ROUTE_REPLAN
 
 storage:
   minio:
@@ -63,6 +65,16 @@ ai:
     head_pitch_threshold: 30
     fatigue_score_threshold: 70
     continuous_fatigue_minutes: 20
+
+route:
+  enabled: true
+  default_strategy: safest
+  cache_ttl: 3600
+
+traffic:
+  webhook_token: ddg-traffic-webhook-2026-change-me
+  scanner_interval_sec: 60
+  trigger_window_min: 30
 
 map:
   amap:

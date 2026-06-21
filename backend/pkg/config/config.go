@@ -16,6 +16,7 @@ type Config struct {
 	Map        MapConfig        `mapstructure:"map"`
 	Blockchain BlockchainConfig `mapstructure:"blockchain"`
 	Route      RouteConfig      `mapstructure:"route"`
+	Traffic    TrafficConfig    `mapstructure:"traffic"`
 	JWT        JWTConfig        `mapstructure:"jwt"`
 	Log        LogConfig        `mapstructure:"log"`
 }
@@ -140,15 +141,15 @@ type RouteConfig struct {
 	CacheTTL       int    `mapstructure:"cache_ttl"`
 }
 
+type TrafficConfig struct {
+	WebhookToken       string `mapstructure:"webhook_token"`
+	ScannerIntervalSec int    `mapstructure:"scanner_interval_sec"`
+	TriggerWindowMin   int    `mapstructure:"trigger_window_min"`
+}
+
 type JWTConfig struct {
 	Secret       string `mapstructure:"secret"`
 	ExpireHours  int    `mapstructure:"expire_hours"`
-}
-
-type RouteConfig struct {
-	Enabled         bool   `mapstructure:"enabled"`
-	DefaultStrategy string `mapstructure:"default_strategy"`
-	CacheTTL        int    `mapstructure:"cache_ttl"`
 }
 
 type LogConfig struct {
@@ -158,6 +159,13 @@ type LogConfig struct {
 }
 
 var Global *Config
+
+func GlobalConfig() *Config {
+	if Global == nil {
+		return &Config{}
+	}
+	return Global
+}
 
 func Load(path string) (*Config, error) {
 	v := viper.New()

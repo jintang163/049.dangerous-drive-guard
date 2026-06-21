@@ -168,6 +168,34 @@ type TrafficEventCreateRequest struct {
 	ExpectedEndAt   *time.Time       `json:"expected_end_at"`
 }
 
+type WebhookTrafficEvent struct {
+	EventType          string   `json:"event_type" binding:"required"`
+	EventLevel         int      `json:"event_level"`
+	Title              string   `json:"title" binding:"required"`
+	Description        string   `json:"description"`
+	Source             string   `json:"source"`
+	RoadName           string   `json:"road_name"`
+	StartPoint         *JSON    `json:"start_point"`
+	EndPoint           *JSON    `json:"end_point"`
+	AffectedGeometry   *JSON    `json:"affected_geometry"`
+	CenterLat          *float64 `json:"center_lat"`
+	CenterLng          *float64 `json:"center_lng"`
+	AffectedLengthKm   *float64 `json:"affected_length_km"`
+	CongestionLevel    *int     `json:"congestion_level"`
+	AvgSpeedKmh        *float64 `json:"avg_speed_kmh"`
+	DurationMinutes    *int     `json:"duration_minutes"`
+	StartedAt          string   `json:"started_at"`
+	ExpectedEndAt      string   `json:"expected_end_at"`
+	RelatedOfficialID  string   `json:"related_official_id"`
+	ExtraInfo          *JSON    `json:"extra_info"`
+}
+
+type WebhookImportResponse struct {
+	Accepted int               `json:"accepted"`
+	Ignored  int               `json:"ignored"`
+	Errors   map[string]string `json:"errors"`
+}
+
 type ReplanTriggerRequest struct {
 	WaybillID       int64              `json:"waybill_id" binding:"required"`
 	TriggerType     ReplanTriggerType  `json:"trigger_type" binding:"required"`
