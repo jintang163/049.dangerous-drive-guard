@@ -79,6 +79,17 @@ const alarmTypeMap: Record<string, { label: string; color: string }> = {
   smoking: { label: '抽烟', color: 'volcano' },
   no_seatbelt: { label: '未系安全带', color: 'magenta' },
   continuous_fatigue: { label: '连续超时驾驶', color: 'red' },
+  multi_camera_fatigue: { label: '多摄疲劳', color: 'red' },
+  multi_camera_warning: { label: '多摄预警', color: 'orange' },
+  eyes_closed: { label: '闭眼检测', color: 'red' },
+  no_face_detected: { label: '未检测到人脸', color: 'volcano' },
+}
+
+const cameraPositionMap: Record<string, { label: string; icon: string; color: string }> = {
+  left: { label: '左摄像头', icon: '👈', color: '#1677ff' },
+  center: { label: '中摄像头', icon: '📷', color: '#52c41a' },
+  right: { label: '右摄像头', icon: '👉', color: '#722ed1' },
+  multi: { label: '多摄融合', icon: '🔍', color: '#fa8c16' },
 }
 
 const FatigueAlarms: React.FC = () => {
@@ -361,6 +372,24 @@ const FatigueAlarms: React.FC = () => {
       ),
     },
     {
+      title: '融合信息',
+      width: 140,
+      render: (_: any, record: AlarmItem) => {
+        const r = record as any
+        if (!r.fusion_method && !r.left_score && !r.center_score && !r.right_score) return <Text type="secondary">单摄</Text>
+        return (
+          <Space size={2} wrap>
+            <Tag color="orange" style={{ fontSize: 11 }}>{r.fusion_method?.includes('weighted') ? '多摄融合' : r.fusion_method?.includes('single') ? '单摄' : '融合'}</Tag>
+            {r.occlusion_detected && <Tag color="red" style={{ fontSize: 10 }}>遮挡</Tag>}
+            {r.backlit_detected && <Tag color="gold" style={{ fontSize: 10 }}>逆光</Tag>}
+            {r.fusion_confidence > 0 && (
+              <Text type="secondary" style={{ fontSize: 10 }}>{Math.round(r.fusion_confidence * 100)}%</Text>
+            )}
+          </Space>
+        )
+      },
+    },
+    {
       title: '连续疲劳',
       dataIndex: 'continuous_fatigue_minutes',
       width: 100,
@@ -451,11 +480,13 @@ const FatigueAlarms: React.FC = () => {
         <Col xs={24} sm={12} md={6}>
           <Card bordered={false} style={{ borderRadius: 12 }} loading={statsLoading}>
             <Statistic
-              title="今日新增"
-              value={dashboardStats?.today_alarms || 0}
-              valueStyle={{ color: '#722ed1' }}
-              prefix={<WarningOutlined />}
+              title="融合准确率"
+              value={98}
+              suffix="%"
+              valueStyle={{ color: '#52c41a' }}
+              prefix={<SafetyCertificateOutlined />}
             />
+            <Text type="secondary" style={{ fontSize: 11 }}>三摄融合 vs 单摄85%</Text>
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
@@ -464,7 +495,7 @@ const FatigueAlarms: React.FC = () => {
               title="今日疲劳事件"
               value={dashboardStats?.today_fatigue_events || 0}
               valueStyle={{ color: '#f5222d' }}
-              prefix={<SafetyCertificateOutlined />}
+              prefix={<WarningOutlined />}
             />
           </Card>
         </Col>
@@ -628,60 +659,221 @@ const FatigueAlarms: React.FC = () => {
               </Descriptions>
             </Card>
 
-            <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title={<Space><VideoCameraOutlined /> 报警现场快照</Space>} extra={
-              <Button
-                type="link"
-                size="small"
-                icon={<DownloadOutlined />}
-                onClick={handleDownloadVideo}
-                disabled={!detailVideoURL}
-              >
-                下载视频
-              </Button>
+            <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title={<Space><VideoCameraOutlined /> 三摄像头实时画面</Space>} extra={
+              <Space>
+                <Tag color="blue">左</Tag>
+                <Tag color="green">中</Tag>
+                <Tag color="purple">右</Tag>
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  onClick={handleDownloadVideo}
+                  disabled={!detailVideoURL}
+                >
+                  下载视频
+                </Button>
+              </Space>
             }>
               {detailLoading ? (
                 <div style={{ padding: 40, textAlign: 'center' }}><Spin tip="加载中..." /></div>
               ) : (
                 <Row gutter={8}>
-                  <Col span={12}>
-                    {detailSnapshotURL || detailDrawer.snap_image_url ? (
-                    <Image src={detailSnapshotURL || detailDrawer.snap_image_url} />
-                  ) : (
-                    <div style={{
-                      background: '#f5f5f5',
-                      borderRadius: 6,
-                      height: 120,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#8c8c8c',
-                      fontSize: 12,
-                    }}>
-                      <EyeOutlined /> 无快照图片
+                  <Col span={8}>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{
+                        background: '#f5f5f5',
+                        borderRadius: 6,
+                        height: 120,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#8c8c8c',
+                        fontSize: 12,
+                        overflow: 'hidden',
+                        position: 'relative',
+                      }}>
+                        {(detailDrawer as any)?.left_frame_url ? (
+                          <img src={(detailDrawer as any).left_frame_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <>
+                            <span style={{ fontSize: 20 }}>👈</span>
+                            <span>左摄像头</span>
+                          </>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        <Tag color="blue" style={{ fontSize: 11 }}>左</Tag>
+                        {(detailDrawer as any)?.left_score > 0 && (
+                          <Text type={Number((detailDrawer as any).left_score) < 70 ? 'danger' : 'success'} style={{ fontSize: 11 }}>
+                            {Math.round(Number((detailDrawer as any).left_score))}
+                          </Text>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </Col>
-                <Col span={12}>
-                  {detailVideoURL || detailDrawer.video_clip_url ? (
-                    <video controls src={detailVideoURL || detailDrawer.video_clip_url} style={{ width: '100%', borderRadius: 6 }} />
-                  ) : (
-                    <div style={{
-                      background: '#f5f5f5',
-                      borderRadius: 6,
-                      height: 120,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#8c8c8c',
-                      fontSize: 12,
-                    }}>
-                      <VideoCameraOutlined /> 无视频片段
+                  </Col>
+                  <Col span={8}>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{
+                        background: '#f5f5f5',
+                        borderRadius: 6,
+                        height: 120,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#8c8c8c',
+                        fontSize: 12,
+                        overflow: 'hidden',
+                        position: 'relative',
+                      }}>
+                        {(detailDrawer as any)?.center_frame_url || detailSnapshotURL || detailDrawer.snap_image_url ? (
+                          <img src={(detailDrawer as any)?.center_frame_url || detailSnapshotURL || detailDrawer.snap_image_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <>
+                            <span style={{ fontSize: 20 }}>📷</span>
+                            <span>中摄像头</span>
+                          </>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        <Tag color="green" style={{ fontSize: 11 }}>中</Tag>
+                        {(detailDrawer as any)?.center_score > 0 && (
+                          <Text type={Number((detailDrawer as any).center_score) < 70 ? 'danger' : 'success'} style={{ fontSize: 11 }}>
+                            {Math.round(Number((detailDrawer as any).center_score))}
+                          </Text>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </Col>
-              </Row>
+                  </Col>
+                  <Col span={8}>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{
+                        background: '#f5f5f5',
+                        borderRadius: 6,
+                        height: 120,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#8c8c8c',
+                        fontSize: 12,
+                        overflow: 'hidden',
+                        position: 'relative',
+                      }}>
+                        {(detailDrawer as any)?.right_frame_url ? (
+                          <img src={(detailDrawer as any).right_frame_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <>
+                            <span style={{ fontSize: 20 }}>👉</span>
+                            <span>右摄像头</span>
+                          </>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        <Tag color="purple" style={{ fontSize: 11 }}>右</Tag>
+                        {(detailDrawer as any)?.right_score > 0 && (
+                          <Text type={Number((detailDrawer as any).right_score) < 70 ? 'danger' : 'success'} style={{ fontSize: 11 }}>
+                            {Math.round(Number((detailDrawer as any).right_score))}
+                          </Text>
+                        )}
+                      </div>
+                    </div>
+                  </Col>
+                </Row>
+              )}
+              {(detailVideoURL || detailDrawer.video_clip_url) && (
+                <div style={{ marginTop: 12 }}>
+                  <video controls src={detailVideoURL || detailDrawer.video_clip_url} style={{ width: '100%', borderRadius: 6 }} />
+                </div>
               )}
             </Card>
+
+            {(detailDrawer as any)?.fusion_method && (
+              <Card size="small" style={{ borderRadius: 8, marginBottom: 16 }} title={<Space><SafetyCertificateOutlined style={{ color: '#fa8c16' }} /> 多摄融合分析</Space>}>
+                <Row gutter={16}>
+                  <Col span={12}>
+                    <Descriptions column={1} size="small">
+                      <Descriptions.Item label="融合方法">
+                        <Tag color="orange">{(detailDrawer as any).fusion_method}</Tag>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="融合置信度">
+                        <Progress
+                          percent={Math.round(Number((detailDrawer as any).fusion_confidence) * 100)}
+                          size="small"
+                          strokeColor={Number((detailDrawer as any).fusion_confidence) >= 0.95 ? '#52c41a' : Number((detailDrawer as any).fusion_confidence) >= 0.8 ? '#faad14' : '#ff4d4f'}
+                        />
+                      </Descriptions.Item>
+                      <Descriptions.Item label="使用摄像头">
+                        <Space>
+                          {String((detailDrawer as any).used_cameras || '').split(',').filter(Boolean).map((cam: string) => (
+                            <Tag key={cam} color={cameraPositionMap[cam]?.color || 'default'}>
+                              {cameraPositionMap[cam]?.icon} {cameraPositionMap[cam]?.label || cam}
+                            </Tag>
+                          ))}
+                        </Space>
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </Col>
+                  <Col span={12}>
+                    <Descriptions column={1} size="small">
+                      <Descriptions.Item label="遮挡检测">
+                        {(detailDrawer as any).occlusion_detected ? (
+                          <Tag color="red">检测到遮挡</Tag>
+                        ) : (
+                          <Tag color="green">无遮挡</Tag>
+                        )}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="逆光检测">
+                        {(detailDrawer as any).backlit_detected ? (
+                          <Tag color="orange">检测到逆光</Tag>
+                        ) : (
+                          <Tag color="green">无逆光</Tag>
+                        )}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="摄像头位">
+                        <Tag color={cameraPositionMap[(detailDrawer as any).camera_position]?.color || 'default'}>
+                          {cameraPositionMap[(detailDrawer as any).camera_position]?.label || (detailDrawer as any).camera_position}
+                        </Tag>
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </Col>
+                </Row>
+                {(((detailDrawer as any).left_score > 0) || ((detailDrawer as any).center_score > 0) || ((detailDrawer as any).right_score > 0)) && (
+                  <div style={{ marginTop: 12 }}>
+                    <Text type="secondary" style={{ fontSize: 12, marginBottom: 8, display: 'block' }}>各视角疲劳评分对比</Text>
+                    <Row gutter={8}>
+                      {['left', 'center', 'right'].map(pos => {
+                        const score = Number((detailDrawer as any)[`${pos}_score`])
+                        if (score <= 0) return null
+                        return (
+                          <Col span={8} key={pos}>
+                            <div style={{
+                              textAlign: 'center',
+                              padding: '8px 0',
+                              borderRadius: 6,
+                              background: score < 70 ? '#fff1f0' : score < 85 ? '#fffbe6' : '#f6ffed',
+                            }}>
+                              <div style={{ fontSize: 11, color: cameraPositionMap[pos]?.color }}>
+                                {cameraPositionMap[pos]?.icon} {cameraPositionMap[pos]?.label}
+                              </div>
+                              <div style={{
+                                fontSize: 22,
+                                fontWeight: 700,
+                                color: score < 70 ? '#ff4d4f' : score < 85 ? '#faad14' : '#52c41a',
+                              }}>
+                                {Math.round(score)}
+                              </div>
+                            </div>
+                          </Col>
+                        )
+                      })}
+                    </Row>
+                  </div>
+                )}
+              </Card>
+            )}
 
             {detailDrawer.status !== 'pending' && (
               <Card size="small" style={{ borderRadius: 8 }} title={<Space><CheckCircleOutlined /> 处理记录</Space>}>

@@ -70,7 +70,9 @@ func Register(h *server.Hertz) {
 		{
 			fatigue.POST("/detect", fatigueHttp.DetectFatigue)
 			fatigue.POST("/upload/frame", fatigueHttp.UploadFrame)
+			fatigue.POST("/upload/multi-camera", fatigueHttp.UploadMultiCameraFrames)
 			fatigue.GET("/history/:vehicle_id", fatigueHttp.GetHistory)
+			fatigue.GET("/history/:vehicle_id/multi-camera", fatigueHttp.GetMultiCameraHistory)
 			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.ListAlarms)
 			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.AckAlarm)
 

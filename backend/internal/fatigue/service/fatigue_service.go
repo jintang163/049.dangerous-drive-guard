@@ -67,7 +67,13 @@ func (s *FatigueService) DetectFatigue(ctx context.Context, req *model.FatigueDe
 	logger.Global.Debug("detecting fatigue",
 		zap.Int64("vehicle_id", req.VehicleID),
 		zap.Int64("driver_id", req.DriverID),
+		zap.Bool("enable_fusion", req.EnableFusion),
+		zap.Int("frame_count", len(req.Frames)),
 	)
+
+	if req.EnableFusion && len(req.Frames) > 0 {
+		return s.detectMultiCamera(ctx, req)
+	}
 
 	window := s.pushWindow(req.DriverID, req.Metrics)
 	score, level, alarmType, msg := s.detector.Detect(req.Landmarks, req.Metrics, window)
@@ -93,20 +99,21 @@ func (s *FatigueService) DetectFatigue(ctx context.Context, req *model.FatigueDe
 	}
 
 	record := &model.FatigueDetectionRecord{
-		VehicleID:        req.VehicleID,
-		DriverID:         req.DriverID,
-		WaybillID:        req.WaybillID,
-		Metrics:          req.Metrics,
-		FatigueScore:     score,
-		FatigueLevel:     level,
+		VehicleID:     req.VehicleID,
+		DriverID:      req.DriverID,
+		WaybillID:     req.WaybillID,
+		Metrics:       req.Metrics,
+		FatigueScore:  score,
+		FatigueLevel:  level,
 		IsAlarmTriggered: resp.NeedAlarm,
-		AlarmType:        alarmType,
-		DetectionTime:    req.DetectionTime,
-		Latitude:         req.Latitude,
-		Longitude:        req.Longitude,
-		VehicleSpeed:     req.VehicleSpeed,
-		EdgeComputed:     req.EdgeComputed,
-		NetworkStatus:    req.NetworkStatus,
+		AlarmType:     alarmType,
+		DetectionTime: req.DetectionTime,
+		Latitude:      req.Latitude,
+		Longitude:     req.Longitude,
+		VehicleSpeed:  req.VehicleSpeed,
+		EdgeComputed:  req.EdgeComputed,
+		NetworkStatus: req.NetworkStatus,
+		CameraPosition: string(req.CameraPosition),
 	}
 	_ = s.saveRecord(ctx, record)
 
@@ -118,6 +125,145 @@ func (s *FatigueService) DetectFatigue(ctx context.Context, req *model.FatigueDe
 	}
 
 	_ = s.updateDrivingScore(ctx, req.DriverID, req.WaybillID, req, score)
+
+	return resp, nil
+}
+
+func (s *FatigueService) detectMultiCamera(ctx context.Context, req *model.FatigueDetectRequest) (*model.FatigueDetectResponse, error) {
+	var fusedMetrics model.FatigueMetrics
+	validCount := 0
+	for _, frame := range req.Frames {
+		if frame.FaceDetected {
+			fusedMetrics.PERCLOS += frame.Metrics.PERCLOS
+			fusedMetrics.EyeClosedRatio += frame.Metrics.EyeClosedRatio
+			fusedMetrics.BlinkCount += frame.Metrics.BlinkCount
+			fusedMetrics.BlinkFrequency += frame.Metrics.BlinkFrequency
+			fusedMetrics.YawnCount += frame.Metrics.YawnCount
+			fusedMetrics.MouthOpenRatio += frame.Metrics.MouthOpenRatio
+			fusedMetrics.HeadPitch += frame.Metrics.HeadPitch
+			fusedMetrics.HeadYaw += frame.Metrics.HeadYaw
+			fusedMetrics.HeadRoll += frame.Metrics.HeadRoll
+			fusedMetrics.GazeDeviation += frame.Metrics.GazeDeviation
+			if frame.Metrics.PhoneUsageDetected {
+				fusedMetrics.PhoneUsageDetected = true
+			}
+			if frame.Metrics.SmokingDetected {
+				fusedMetrics.SmokingDetected = true
+			}
+			if !frame.Metrics.SeatbeltOn {
+				fusedMetrics.SeatbeltOn = false
+			}
+			validCount++
+		}
+	}
+
+	if validCount > 0 {
+		fusedMetrics.PERCLOS /= float64(validCount)
+		fusedMetrics.EyeClosedRatio /= float64(validCount)
+		fusedMetrics.BlinkCount /= validCount
+		fusedMetrics.BlinkFrequency /= float64(validCount)
+		fusedMetrics.YawnCount = int(math.Round(float64(fusedMetrics.YawnCount) / float64(validCount)))
+		fusedMetrics.MouthOpenRatio /= float64(validCount)
+		fusedMetrics.HeadPitch /= float64(validCount)
+		fusedMetrics.HeadYaw /= float64(validCount)
+		fusedMetrics.HeadRoll /= float64(validCount)
+		fusedMetrics.GazeDeviation /= float64(validCount)
+	}
+
+	window := s.pushWindow(req.DriverID, fusedMetrics)
+	fusionResult, alarmType, msg := s.detector.DetectMultiCamera(req.Frames, window)
+
+	resp := &model.FatigueDetectResponse{
+		FatigueScore:  fusionResult.FatigueScore,
+		FatigueLevel:  fusionResult.FatigueLevel,
+		NeedAlarm:     fusionResult.FatigueScore < s.config.FatigueScoreThreshold,
+		AlarmMessage:  msg,
+		AlarmType:     alarmType,
+		FusionResult:  fusionResult,
+		SeatbeltAlert: !fusedMetrics.SeatbeltOn,
+		PhoneAlert:    fusedMetrics.PhoneUsageDetected,
+		SmokingAlert:  fusedMetrics.SmokingDetected,
+	}
+
+	cameraFrames := make(map[string]*model.MultiCameraFrame)
+	for i := range req.Frames {
+		cameraFrames[string(req.Frames[i].Position)] = &req.Frames[i]
+	}
+	resp.CameraFrames = cameraFrames
+
+	if resp.NeedAlarm {
+		switch fusionResult.FatigueLevel {
+		case model.FatigueFatigue:
+			resp.RecommendRest = 30
+		case model.FatigueWarning:
+			resp.RecommendRest = 20
+		}
+	}
+
+	var leftURL, centerURL, rightURL string
+	for _, frame := range req.Frames {
+		url := frame.ImageURL
+		if url == "" && frame.ImageBase64 != "" {
+			url = "base64:" + string(frame.Position)
+		}
+		switch frame.Position {
+		case model.CameraLeft:
+			leftURL = url
+		case model.CameraCenter:
+			centerURL = url
+		case model.CameraRight:
+			rightURL = url
+		}
+	}
+
+	record := &model.FatigueDetectionRecord{
+		VehicleID:        req.VehicleID,
+		DriverID:         req.DriverID,
+		WaybillID:        req.WaybillID,
+		Metrics:          fusedMetrics,
+		FatigueScore:     fusionResult.FatigueScore,
+		FatigueLevel:     fusionResult.FatigueLevel,
+		IsAlarmTriggered: resp.NeedAlarm,
+		AlarmType:        alarmType,
+		DetectionTime:    req.DetectionTime,
+		Latitude:         req.Latitude,
+		Longitude:        req.Longitude,
+		VehicleSpeed:     req.VehicleSpeed,
+		EdgeComputed:     req.EdgeComputed,
+		NetworkStatus:    req.NetworkStatus,
+		CameraPosition:   "multi",
+		LeftFrameURL:     leftURL,
+		CenterFrameURL:   centerURL,
+		RightFrameURL:    rightURL,
+		LeftScore:        fusionResult.LeftScore,
+		CenterScore:      fusionResult.CenterScore,
+		RightScore:       fusionResult.RightScore,
+		FusionMethod:     fusionResult.FusionMethod,
+		FusionConfidence: fusionResult.FusionConfidence,
+		OcclusionDetected: fusionResult.OcclusionDetected,
+		BacklitDetected:  fusionResult.BacklitDetected,
+		UsedCameras:      strings.Join(fusionResult.UsedCameras, ","),
+	}
+	_ = s.saveRecord(ctx, record)
+
+	if resp.NeedAlarm {
+		continuousMinutes := s.checkContinuousFatigue(req.DriverID, fusionResult.FatigueScore)
+		go s.handleAlarm(ctx, record, alarmType, continuousMinutes, req)
+	} else {
+		s.clearContinuousFatigue(req.DriverID)
+	}
+
+	_ = s.updateDrivingScore(ctx, req.DriverID, req.WaybillID, req, fusionResult.FatigueScore)
+
+	logger.Global.Info("multi-camera fatigue detection completed",
+		zap.Int64("vehicle_id", req.VehicleID),
+		zap.Float64("score", fusionResult.FatigueScore),
+		zap.String("level", string(fusionResult.FatigueLevel)),
+		zap.String("method", fusionResult.FusionMethod),
+		zap.Float64("confidence", fusionResult.FusionConfidence),
+		zap.Bool("occlusion", fusionResult.OcclusionDetected),
+		zap.Bool("backlit", fusionResult.BacklitDetected),
+	)
 
 	return resp, nil
 }
@@ -223,8 +369,12 @@ func (s *FatigueService) saveRecord(ctx context.Context, record *model.FatigueDe
 		 blink_count, blink_frequency, yawn_count, yawn_ratio, head_pitch, head_yaw, head_roll,
 		 gaze_deviation, phone_usage_detected, smoking_detected, seatbelt_detected,
 		 fatigue_score, fatigue_level, is_alarm_triggered, alarm_type, detection_time,
-		 latitude, longitude, vehicle_speed, edge_computed, network_status, metrics)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 latitude, longitude, vehicle_speed, edge_computed, network_status, metrics,
+		 camera_position, left_frame_url, center_frame_url, right_frame_url,
+		 left_score, center_score, right_score, fusion_method, fusion_confidence,
+		 occlusion_detected, backlit_detected, used_cameras)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.VehicleID, record.DriverID, record.WaybillID, record.FrameImageURL,
 		record.Metrics.PERCLOS, record.Metrics.EyeClosedRatio,
 		record.Metrics.BlinkCount, record.Metrics.BlinkFrequency,
@@ -236,6 +386,10 @@ func (s *FatigueService) saveRecord(ctx context.Context, record *model.FatigueDe
 		record.AlarmType, record.DetectionTime,
 		record.Latitude, record.Longitude, record.VehicleSpeed,
 		record.EdgeComputed, record.NetworkStatus, string(metricsJSON),
+		record.CameraPosition, record.LeftFrameURL, record.CenterFrameURL, record.RightFrameURL,
+		record.LeftScore, record.CenterScore, record.RightScore,
+		record.FusionMethod, record.FusionConfidence,
+		record.OcclusionDetected, record.BacklitDetected, record.UsedCameras,
 	)
 	if result.Error != nil {
 		logger.Sugar.Errorf("save fatigue record error: %v", result.Error)
@@ -299,6 +453,53 @@ func (s *FatigueService) GetHistory(ctx context.Context, vehicleID int64, startT
 			&r.AlarmType, &r.DetectionTime,
 			&r.Latitude, &r.Longitude, &r.VehicleSpeed,
 			&r.EdgeComputed, &r.NetworkStatus, &metricsJSON, &r.CreatedAt)
+		_ = json.Unmarshal([]byte(metricsJSON), &r.Metrics)
+		records = append(records, &r)
+	}
+	return records, total, nil
+}
+
+func (s *FatigueService) GetMultiCameraHistory(ctx context.Context, vehicleID int64, cameraPosition string, startTime, endTime time.Time, page, pageSize int) ([]*model.FatigueDetectionRecord, int64, error) {
+	var records []*model.FatigueDetectionRecord
+	var total int64
+
+	query := s.db.WithContext(ctx).Table("fatigue_detection_records").Where("vehicle_id = ?", vehicleID)
+	if cameraPosition != "" {
+		query = query.Where("camera_position = ?", cameraPosition)
+	}
+	if !startTime.IsZero() {
+		query = query.Where("detection_time >= ?", startTime)
+	}
+	if !endTime.IsZero() {
+		query = query.Where("detection_time <= ?", endTime)
+	}
+
+	query.Count(&total)
+	offset := (page - 1) * pageSize
+	rows, err := query.Order("detection_time DESC").Offset(offset).Limit(pageSize).Rows()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var r model.FatigueDetectionRecord
+		var metricsJSON string
+		rows.Scan(&r.ID, &r.VehicleID, &r.DriverID, &r.WaybillID, &r.FrameImageURL,
+			&r.Metrics.PERCLOS, &r.Metrics.EyeClosedRatio,
+			&r.Metrics.BlinkCount, &r.Metrics.BlinkFrequency,
+			&r.Metrics.YawnCount, &r.Metrics.MouthOpenRatio,
+			&r.Metrics.HeadPitch, &r.Metrics.HeadYaw, &r.Metrics.HeadRoll,
+			&r.Metrics.GazeDeviation, &r.Metrics.PhoneUsageDetected,
+			&r.Metrics.SmokingDetected, &r.Metrics.SeatbeltOn,
+			&r.FatigueScore, &r.FatigueLevel, &r.IsAlarmTriggered,
+			&r.AlarmType, &r.DetectionTime,
+			&r.Latitude, &r.Longitude, &r.VehicleSpeed,
+			&r.EdgeComputed, &r.NetworkStatus, &metricsJSON, &r.CreatedAt,
+			&r.CameraPosition, &r.LeftFrameURL, &r.CenterFrameURL, &r.RightFrameURL,
+			&r.LeftScore, &r.CenterScore, &r.RightScore,
+			&r.FusionMethod, &r.FusionConfidence,
+			&r.OcclusionDetected, &r.BacklitDetected, &r.UsedCameras)
 		_ = json.Unmarshal([]byte(metricsJSON), &r.Metrics)
 		records = append(records, &r)
 	}

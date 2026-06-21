@@ -271,6 +271,62 @@ export const fatigueApi = {
     api.post<{ fatigue_score: number; fatigue_level: string; alarm_triggered: boolean; landmarks: number[] }>('/fatigue/detect', data),
   uploadFrame: (data: FormData) =>
     api.post<{ frame_id: number; fatigue_score: number; processed: boolean }>('/fatigue/frames', data, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  uploadMultiCamera: (data: {
+    vehicle_id: number;
+    driver_id: number;
+    waybill_id?: number;
+    frames: Array<{
+      position: string;
+      image_url?: string;
+      image_base64?: string;
+      face_detected: boolean;
+      confidence: number;
+      quality: number;
+      occluded: boolean;
+      backlit: boolean;
+      metrics: Record<string, unknown>;
+      landmarks: Record<string, unknown>;
+    }>;
+    latitude?: number;
+    longitude?: number;
+    vehicle_speed?: number;
+    edge_computed?: boolean;
+    network_status?: string;
+  }) =>
+    api.post<{
+      fatigue_score: number;
+      fatigue_level: string;
+      need_alarm: boolean;
+      alarm_type?: string;
+      alarm_message?: string;
+      fusion_result?: {
+        fatigue_score: number;
+        fatigue_level: string;
+        fusion_method: string;
+        used_cameras: string[];
+        primary_camera: string;
+        fusion_confidence: number;
+        left_score: number;
+        center_score: number;
+        right_score: number;
+        occlusion_detected: boolean;
+        backlit_detected: boolean;
+      };
+      camera_frames?: Record<string, {
+        position: string;
+        image_url: string;
+        face_detected: boolean;
+        confidence: number;
+        quality: number;
+      }>;
+    }>('/fatigue/upload/multi-camera', data),
+  getMultiCameraHistory: (vehicleID: number, params?: { camera_position?: string; start_time?: string; end_time?: string; page?: number; page_size?: number }) =>
+    api.getPage<{
+      id: number; vehicle_id: number; driver_id: number; fatigue_score: number; fatigue_level: string;
+      detection_time: string; camera_position: string; left_score: number; center_score: number; right_score: number;
+      fusion_method: string; fusion_confidence: number; occlusion_detected: boolean; backlit_detected: boolean;
+      left_frame_url: string; center_frame_url: string; right_frame_url: string; used_cameras: string;
+    }>(`/fatigue/history/${vehicleID}/multi-camera`, params),
   history: (params?: PageParams & { vehicle_id?: number; driver_id?: number }) =>
     api.getPage<{ id: number; vehicle_id: number; driver_id: number; fatigue_score: number; fatigue_level: string; detection_time: string; vehicle_speed: number; is_alarm_triggered: boolean }>('/fatigue/records', params),
   listAlarms: (params?: PageParams & { status?: string; level?: number; alarm_type?: string }) =>

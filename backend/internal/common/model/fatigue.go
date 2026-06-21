@@ -45,6 +45,41 @@ type FatigueMetrics struct {
 	SeatbeltOn         bool    `json:"seatbelt_on"`
 }
 
+type CameraPosition string
+
+const (
+	CameraLeft   CameraPosition = "left"
+	CameraCenter CameraPosition = "center"
+	CameraRight  CameraPosition = "right"
+)
+
+type MultiCameraFrame struct {
+	Position     CameraPosition `json:"position"`
+	ImageURL     string         `json:"image_url"`
+	ImageBase64  string         `json:"image_base64"`
+	Landmarks    FaceLandmarks  `json:"landmarks"`
+	Metrics      FatigueMetrics `json:"metrics"`
+	FaceDetected bool           `json:"face_detected"`
+	Confidence   float64        `json:"confidence"`
+	Quality      float64        `json:"quality"`
+	Occluded     bool           `json:"occluded"`
+	Backlit      bool           `json:"backlit"`
+}
+
+type FusionResult struct {
+	FatigueScore      float64      `json:"fatigue_score"`
+	FatigueLevel      FatigueLevel `json:"fatigue_level"`
+	FusionMethod      string       `json:"fusion_method"`
+	UsedCameras       []string     `json:"used_cameras"`
+	PrimaryCamera     string       `json:"primary_camera"`
+	FusionConfidence  float64      `json:"fusion_confidence"`
+	LeftScore         float64      `json:"left_score"`
+	CenterScore       float64      `json:"center_score"`
+	RightScore        float64      `json:"right_score"`
+	OcclusionDetected bool         `json:"occlusion_detected"`
+	BacklitDetected   bool         `json:"backlit_detected"`
+}
+
 type FatigueDetectRequest struct {
 	VehicleID     int64          `json:"vehicle_id" binding:"required"`
 	DriverID      int64          `json:"driver_id" binding:"required"`
@@ -59,6 +94,9 @@ type FatigueDetectRequest struct {
 	DetectionTime time.Time      `json:"detection_time"`
 	EdgeComputed  bool           `json:"edge_computed"`
 	NetworkStatus string         `json:"network_status"`
+	CameraPosition CameraPosition `json:"camera_position"`
+	Frames        []MultiCameraFrame `json:"frames"`
+	EnableFusion  bool           `json:"enable_fusion"`
 }
 
 type FatigueDetectResponse struct {
@@ -71,6 +109,8 @@ type FatigueDetectResponse struct {
 	PhoneAlert    bool         `json:"phone_alert,omitempty"`
 	SmokingAlert  bool         `json:"smoking_alert,omitempty"`
 	RecommendRest int          `json:"recommend_rest_minutes,omitempty"`
+	FusionResult  *FusionResult `json:"fusion_result,omitempty"`
+	CameraFrames  map[string]*MultiCameraFrame `json:"camera_frames,omitempty"`
 }
 
 type FatigueDetectionRecord struct {
@@ -91,6 +131,18 @@ type FatigueDetectionRecord struct {
 	VehicleSpeed        float64        `gorm:"type:decimal(5,2)" json:"vehicle_speed"`
 	EdgeComputed        bool           `gorm:"default:false" json:"edge_computed"`
 	NetworkStatus       string         `gorm:"type:varchar(20)" json:"network_status"`
+	CameraPosition      string         `gorm:"type:varchar(20);default:center" json:"camera_position"`
+	LeftFrameURL        string         `gorm:"type:varchar(256)" json:"left_frame_url"`
+	CenterFrameURL      string         `gorm:"type:varchar(256)" json:"center_frame_url"`
+	RightFrameURL       string         `gorm:"type:varchar(256)" json:"right_frame_url"`
+	LeftScore           float64        `gorm:"type:decimal(5,2);default:0" json:"left_score"`
+	CenterScore         float64        `gorm:"type:decimal(5,2);default:0" json:"center_score"`
+	RightScore          float64        `gorm:"type:decimal(5,2);default:0" json:"right_score"`
+	FusionMethod        string         `gorm:"type:varchar(32)" json:"fusion_method"`
+	FusionConfidence    float64        `gorm:"type:decimal(5,4);default:0" json:"fusion_confidence"`
+	OcclusionDetected   bool           `gorm:"default:false" json:"occlusion_detected"`
+	BacklitDetected     bool           `gorm:"default:false" json:"backlit_detected"`
+	UsedCameras         string         `gorm:"type:varchar(64)" json:"used_cameras"`
 }
 
 func (FatigueDetectionRecord) TableName() string {

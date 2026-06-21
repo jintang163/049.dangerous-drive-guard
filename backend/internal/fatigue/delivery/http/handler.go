@@ -43,11 +43,12 @@ func DetectFatigue(ctx context.Context, c *app.RequestContext) {
 func UploadFrame(ctx context.Context, c *app.RequestContext) {
 	initService()
 	var req struct {
-		VehicleID int64  `json:"vehicle_id" form:"vehicle_id" binding:"required"`
-		DriverID  int64  `json:"driver_id" form:"driver_id" binding:"required"`
-		WaybillID int64  `json:"waybill_id" form:"waybill_id"`
-		FrameData string `json:"frame_data" form:"frame_data"`
-		Timestamp int64  `json:"timestamp" form:"timestamp"`
+		VehicleID      int64  `json:"vehicle_id" form:"vehicle_id" binding:"required"`
+		DriverID       int64  `json:"driver_id" form:"driver_id" binding:"required"`
+		WaybillID      int64  `json:"waybill_id" form:"waybill_id"`
+		FrameData      string `json:"frame_data" form:"frame_data"`
+		Timestamp      int64  `json:"timestamp" form:"timestamp"`
+		CameraPosition string `json:"camera_position" form:"camera_position"`
 	}
 	if err := c.BindAndValidate(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -59,13 +60,15 @@ func UploadFrame(ctx context.Context, c *app.RequestContext) {
 	}
 
 	detectReq := &model.FatigueDetectRequest{
-		VehicleID:     req.VehicleID,
-		DriverID:      req.DriverID,
-		WaybillID:     req.WaybillID,
-		ImageBase64:   req.FrameData,
-		DetectionTime: detectTime,
-		EdgeComputed:  false,
-		NetworkStatus: "online",
+		VehicleID:      req.VehicleID,
+		DriverID:       req.DriverID,
+		WaybillID:      req.WaybillID,
+		ImageBase64:    req.FrameData,
+		DetectionTime:  detectTime,
+		EdgeComputed:   false,
+		NetworkStatus:  "online",
+		CameraPosition: model.CameraPosition(req.CameraPosition),
+		EnableFusion:   false,
 	}
 	resp, err := fatigueService.DetectFatigue(ctx, detectReq)
 	if err != nil {
@@ -73,6 +76,85 @@ func UploadFrame(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	response.Success(c, resp)
+}
+
+func UploadMultiCameraFrames(ctx context.Context, c *app.RequestContext) {
+	initService()
+	var req struct {
+		VehicleID     int64                   `json:"vehicle_id" binding:"required"`
+		DriverID      int64                   `json:"driver_id" binding:"required"`
+		WaybillID     int64                   `json:"waybill_id"`
+		Frames        []model.MultiCameraFrame `json:"frames" binding:"required"`
+		Latitude      float64                 `json:"latitude"`
+		Longitude     float64                 `json:"longitude"`
+		VehicleSpeed  float64                 `json:"vehicle_speed"`
+		Timestamp     int64                   `json:"timestamp"`
+		EdgeComputed  bool                    `json:"edge_computed"`
+		NetworkStatus string                  `json:"network_status"`
+	}
+	if err := c.BindAndValidate(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if len(req.Frames) == 0 {
+		response.BadRequest(c, "至少需要一个摄像头帧数据")
+		return
+	}
+
+	detectTime := time.Now()
+	if req.Timestamp > 0 {
+		detectTime = time.Unix(req.Timestamp/1000, 0)
+	}
+
+	detectReq := &model.FatigueDetectRequest{
+		VehicleID:     req.VehicleID,
+		DriverID:      req.DriverID,
+		WaybillID:     req.WaybillID,
+		Frames:        req.Frames,
+		Latitude:      req.Latitude,
+		Longitude:     req.Longitude,
+		VehicleSpeed:  req.VehicleSpeed,
+		DetectionTime: detectTime,
+		EdgeComputed:  req.EdgeComputed,
+		NetworkStatus: req.NetworkStatus,
+		EnableFusion:  true,
+	}
+
+	resp, err := fatigueService.DetectFatigue(ctx, detectReq)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, resp)
+}
+
+func GetMultiCameraHistory(ctx context.Context, c *app.RequestContext) {
+	initService()
+	vehicleID, err := strconv.ParseInt(c.Param("vehicle_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "invalid vehicle id")
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "50"))
+	cameraPosition := c.Query("camera_position")
+
+	startTime := time.Time{}
+	endTime := time.Time{}
+	if s := c.Query("start_time"); s != "" {
+		startTime, _ = time.Parse(time.RFC3339, s)
+	}
+	if e := c.Query("end_time"); e != "" {
+		endTime, _ = time.Parse(time.RFC3339, e)
+	}
+
+	records, total, err := fatigueService.GetMultiCameraHistory(ctx, vehicleID, cameraPosition, startTime, endTime, page, pageSize)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Page(c, records, total, page, pageSize)
 }
 
 func GetHistory(ctx context.Context, c *app.RequestContext) {
