@@ -31,6 +31,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   FundProjectionScreenOutlined,
+  CoffeeOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAppStore } from '@/store/app'
@@ -121,6 +122,11 @@ const MainLayout: React.FC = () => {
       key: '/blockchain',
       icon: <LinkOutlined />,
       label: '区块链存证',
+    },
+    {
+      key: '/service-areas',
+      icon: <CoffeeOutlined />,
+      label: '服务区管理',
     },
   ]
 

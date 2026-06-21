@@ -23,6 +23,7 @@ import (
 	vehicleSvc "github.com/dangerous-drive-guard/backend/internal/vehicle/service"
 	weatherHttp "github.com/dangerous-drive-guard/backend/internal/weather/delivery/http"
 	weatherSvc "github.com/dangerous-drive-guard/backend/internal/weather/service"
+	serviceareaHttp "github.com/dangerous-drive-guard/backend/internal/servicearea/delivery/http"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/middleware"
 )
@@ -217,6 +218,32 @@ func Register(h *server.Hertz) {
 				polling.POST("/start", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.StartPollingSession)
 				polling.POST("/:id/end", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.EndPollingSession)
 				polling.GET("/vehicles", middleware.RoleAuth("admin", "dispatcher", "escort"), escortHttp.GetEscortVehiclesForPolling)
+			}
+		}
+
+		serviceAreas := api.Group("/service-areas", middleware.JWTAuth())
+		{
+			serviceAreas.GET("", serviceareaHttp.ListServiceAreas)
+			serviceAreas.GET("/:id", serviceareaHttp.GetServiceAreaDetail)
+			serviceAreas.GET("/:id/reviews", serviceareaHttp.ListReviews)
+			serviceAreas.POST("/reviews", serviceareaHttp.SubmitReview)
+			serviceAreas.POST("/recommend", serviceareaHttp.RecommendServiceAreas)
+			serviceAreas.POST("/status", middleware.RoleAuth("admin", "dispatcher"), serviceareaHttp.UpdateRealtimeStatus)
+			serviceAreas.GET("/statistics/overview", serviceareaHttp.GetStatistics)
+
+			rest := serviceAreas.Group("/rest")
+			{
+				rest.GET("/countdown", serviceareaHttp.GetRestCountdown)
+				rest.POST("/start", serviceareaHttp.StartDriving)
+				rest.POST("/check-in", serviceareaHttp.CheckInServiceArea)
+				rest.POST("/check-out", serviceareaHttp.CheckOutServiceArea)
+				rest.GET("/records", serviceareaHttp.ListDrivingRestRecords)
+			}
+
+			recommendations := serviceAreas.Group("/recommendations")
+			{
+				recommendations.POST("/:id/accept", serviceareaHttp.AcceptRecommendation)
+				recommendations.POST("/:id/reject", serviceareaHttp.RejectRecommendation)
 			}
 		}
 	}

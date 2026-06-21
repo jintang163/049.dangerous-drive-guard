@@ -685,4 +685,248 @@ export const minioApi = {
     api.get<Array<{ name: string; size: number; last_modified: string; url: string }>>('/minio/files', params),
 }
 
+export interface ServiceAreaItem {
+  id: number
+  name: string
+  highway_name: string
+  direction: string
+  province: string
+  city: string
+  latitude: number
+  longitude: number
+  distance_from_start_km: number
+  has_restaurant: boolean
+  has_hotel: boolean
+  has_fuel_station: boolean
+  has_charging: boolean
+  has_rest_room: boolean
+  has_maintenance: boolean
+  has_danger_goods_parking: boolean
+  parking_spaces: number
+  danger_parking_spaces: number
+  phone: string
+  rating: number
+  status: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ServiceAreaRealtimeStatus {
+  id: number
+  service_area_id: number
+  total_parking_spaces: number
+  available_parking_spaces: number
+  total_danger_spaces: number
+  available_danger_spaces: number
+  has_fuel: boolean
+  fuel_price_92: number
+  fuel_price_95: number
+  fuel_price_diesel: number
+  has_charging: boolean
+  charging_piles_total: number
+  charging_piles_available: number
+  has_restaurant: boolean
+  restaurant_rating: number
+  restaurant_wait_minutes: number
+  has_hotel: boolean
+  hotel_rating: number
+  has_maintenance: boolean
+  security_level: number
+  security_patrol_interval: number
+  crowd_level: number
+  weather_condition: string
+  update_time: string
+  data_source: string
+}
+
+export interface ServiceAreaReview {
+  id: number
+  service_area_id: number
+  driver_id: number
+  driver_name: string
+  waybill_id: number
+  vehicle_id: number
+  security_score: number
+  environment_score: number
+  food_score: number
+  service_score: number
+  overall_score: number
+  comment_text: string
+  tags_array: string[]
+  images_array: string[]
+  is_anonymous: boolean
+  status: number
+  check_in_record_id: number
+  created_at: string
+  updated_at: string
+}
+
+export interface DrivingRestRecord {
+  id: number
+  driver_id: number
+  vehicle_id: number
+  waybill_id: number
+  record_date: string
+  drive_start_time: string
+  drive_end_time: string
+  continuous_drive_minutes: number
+  rest_start_time: string
+  rest_end_time: string
+  rest_duration_minutes: number
+  rest_service_area_id: number
+  rest_service_area_name: string
+  status: 'driving' | 'resting' | 'completed'
+  is_overtime: boolean
+  overtime_minutes: number
+  check_in_time: string
+  check_in_latitude: number
+  check_in_longitude: number
+  check_out_time: string
+  check_out_latitude: number
+  check_out_longitude: number
+  min_rest_required: number
+  max_continuous_drive: number
+  remaining_drive_minutes?: number
+  rest_progress_percent?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RestCountdownResponse {
+  driver_id: number
+  vehicle_id: number
+  waybill_id: number
+  status: string
+  continuous_drive_minutes: number
+  remaining_drive_minutes: number
+  max_continuous_drive: number
+  is_overtime: boolean
+  overtime_minutes: number
+  min_rest_required: number
+  current_rest_minutes: number
+  rest_progress_percent: number
+  can_continue_driving: boolean
+  current_service_area_id: number
+  current_service_area_name: string
+  next_recommendation_id: number
+}
+
+export interface ServiceAreaRecommendation {
+  id: number
+  recommend_no: string
+  driver_id: number
+  vehicle_id: number
+  waybill_id: number
+  current_latitude: number
+  current_longitude: number
+  current_address: string
+  continuous_drive_minutes: number
+  remaining_drive_minutes: number
+  fatigue_score: number
+  hazard_class: string
+  recommend_reason: string
+  recommended_service_area_id: number
+  recommended_service_area_name: string
+  distance_km: number
+  estimated_arrival_minutes: number
+  alternatives_array: Array<{
+    service_area_id: number
+    service_area_name: string
+    distance_km: number
+    estimated_arrival_minutes: number
+    available_danger_spaces: number
+    security_level: number
+    restaurant_rating: number
+    has_fuel: boolean
+    has_charging: boolean
+    recommend_reason: string
+    match_score: number
+  }>
+  status: string
+  accepted_at: string
+  arrived_at: string
+  dispatch_source: string
+  dispatcher_id: number
+  created_at: string
+  updated_at: string
+}
+
+export const serviceAreaApi = {
+  list: (params?: PageParams & { keyword?: string; has_danger_parking?: boolean }) =>
+    api.getPage<ServiceAreaItem>('/service-areas', params),
+  get: (id: number) => api.get<{ basic_info: ServiceAreaItem; real_status: ServiceAreaRealtimeStatus }>(`/service-areas/${id}`),
+  getRealtimeStatus: (id: number) => api.get<ServiceAreaRealtimeStatus>(`/service-areas/${id}/status`),
+  updateRealtimeStatus: (data: {
+    service_area_id: number
+    available_parking_spaces?: number
+    available_danger_spaces?: number
+    security_level?: number
+    restaurant_rating?: number
+    crowd_level?: number
+    weather_condition?: string
+  }) => api.post<{ success: boolean; update_time: string }>('/service-areas/status', data),
+
+  getRestCountdown: (driverId: number, vehicleId?: number) =>
+    api.get<RestCountdownResponse>('/service-areas/rest/countdown', { driver_id: driverId, vehicle_id: vehicleId }),
+  startDriving: (data: { driver_id: number; vehicle_id: number; waybill_id?: number }) =>
+    api.post<DrivingRestRecord>('/service-areas/rest/start', data),
+  checkIn: (data: {
+    driver_id: number
+    vehicle_id: number
+    service_area_id: number
+    latitude: number
+    longitude: number
+    waybill_id?: number
+  }) => api.post<DrivingRestRecord>('/service-areas/rest/check-in', data),
+  checkOut: (data: {
+    driver_id: number
+    vehicle_id: number
+    latitude?: number
+    longitude?: number
+  }) => api.post<DrivingRestRecord>('/service-areas/rest/check-out', data),
+  listRestRecords: (params?: PageParams & { driver_id?: number; start_date?: string; end_date?: string }) =>
+    api.getPage<DrivingRestRecord>('/service-areas/rest/records', params),
+
+  recommend: (data: {
+    driver_id: number
+    vehicle_id: number
+    waybill_id?: number
+    latitude: number
+    longitude: number
+    hazard_class?: string
+    fatigue_score?: number
+    radius_km?: number
+  }) => api.post<ServiceAreaRecommendation>('/service-areas/recommend', data),
+
+  acceptRecommendation: (id: number) =>
+    api.post<{ success: boolean; accepted_at: string }>(`/service-areas/recommendations/${id}/accept`),
+  rejectRecommendation: (id: number, reason?: string) =>
+    api.post<{ success: boolean }>(`/service-areas/recommendations/${id}/reject`, { reason }),
+
+  listReviews: (params?: PageParams & { service_area_id?: number }) =>
+    api.getPage<ServiceAreaReview>('/service-areas/reviews', params),
+  submitReview: (data: {
+    service_area_id: number
+    driver_id: number
+    security_score: number
+    environment_score?: number
+    food_score?: number
+    service_score?: number
+    comment_text?: string
+    tags?: string[]
+    images?: string[]
+    is_anonymous?: boolean
+    waybill_id?: number
+    vehicle_id?: number
+  }) => api.post<ServiceAreaReview>('/service-areas/reviews', data),
+
+  getStatistics: () => api.get<{
+    total_service_areas: number
+    danger_parking_areas: number
+    average_rating: number
+    today_check_ins: number
+    today_reviews: number
+  }>('/service-areas/statistics/overview'),
+}
+
 export default api
