@@ -25,6 +25,7 @@ import {
   Alert,
   DatePicker,
   Spin,
+  Tabs,
 } from 'antd'
 import {
   AlertOutlined,
@@ -50,6 +51,7 @@ import { formatDateTime } from '@/utils/auth'
 import dayjs from 'dayjs'
 import { useAppStore, AlarmItem, StatData } from '@/store/app'
 import WebSocketManager from '@/services/ws'
+import NightVisionPanel from './NightVisionPanel'
 
 const { Title, Text, Paragraph } = Typography
 const { Option } = Select
@@ -119,6 +121,7 @@ const FatigueAlarms: React.FC = () => {
   const [detailSnapshotURL, setDetailSnapshotURL] = useState<string>('')
   const [detailLoading, setDetailLoading] = useState(false)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState('alarms')
 
   const fetchFusionStats = useCallback(async () => {
     setStatsLoading(true)
@@ -463,10 +466,38 @@ const FatigueAlarms: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Alert
-        type="warning"
-        showIcon
-        icon={<BellOutlined />}
+      <Card bordered={false} style={{ borderRadius: 12, padding: 0 }} bodyStyle={{ padding: 0 }}>
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          style={{ padding: '0 16px' }}
+          items={[
+            {
+              key: 'alarms',
+              label: (
+                <span>
+                  <AlertOutlined /> 疲劳报警
+                </span>
+              ),
+            },
+            {
+              key: 'night_vision',
+              label: (
+                <span>
+                  <EyeOutlined /> 夜视增强
+                </span>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      {activeTab === 'alarms' && (
+        <>
+          <Alert
+            type="warning"
+            showIcon
+            icon={<BellOutlined />}
         message={
           <Space>
             <Text strong>实时报警提醒</Text>
@@ -973,6 +1004,10 @@ const FatigueAlarms: React.FC = () => {
           </Text>
         </Form>
       </Modal>
+        </>
+      )}
+
+      {activeTab === 'night_vision' && <NightVisionPanel />}
     </div>
   )
 }

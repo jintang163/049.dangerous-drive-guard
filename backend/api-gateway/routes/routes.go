@@ -41,6 +41,10 @@ func Register(h *server.Hertz) {
 	videoService := fatigueSvc.NewVideoService(config.Global)
 	videoHandler := fatigueHttp.NewVideoHandler(videoService)
 
+	nightVisionService := fatigueSvc.NewNightVisionService()
+	imageEnhanceService := fatigueSvc.NewImageEnhancementService()
+	nightVisionHandler := fatigueHttp.NewNightVisionHandler(nightVisionService, imageEnhanceService)
+
 	weatherService := weatherSvc.NewWeatherService(config.Global)
 	weatherHandler := weatherHttp.NewWeatherHandler(weatherService)
 
@@ -77,6 +81,21 @@ func Register(h *server.Hertz) {
 			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.ListAlarms)
 			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.AckAlarm)
 			fatigue.GET("/fusion/stats", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.GetFusionAccuracyStats)
+
+			nightVision := fatigue.Group("/night-vision")
+			{
+				nightVision.GET("/stats", nightVisionHandler.GetStatistics)
+				nightVision.GET("/config", nightVisionHandler.GetConfig)
+				nightVision.PUT("/config", nightVisionHandler.UpdateConfig)
+				nightVision.POST("/config/:vehicle_id/reset", middleware.RoleAuth("admin"), nightVisionHandler.ResetConfig)
+				nightVision.GET("/configs", middleware.RoleAuth("admin"), nightVisionHandler.ListConfigs)
+				nightVision.POST("/infrared/report", nightVisionHandler.ReportInfraredStatus)
+				nightVision.GET("/infrared/logs", nightVisionHandler.ListInfraredLogs)
+				nightVision.POST("/enhance", nightVisionHandler.EnhanceImage)
+				nightVision.GET("/enhance/records", nightVisionHandler.ListEnhanceRecords)
+				nightVision.GET("/enhance/records/:id", nightVisionHandler.GetEnhanceRecord)
+				nightVision.POST("/enhance/records", nightVisionHandler.UploadEnhanceRecord)
+			}
 
 			videoHandler.RegisterRoutes(fatigue, middleware.JWTAuth())
 		}

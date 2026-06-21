@@ -53,6 +53,9 @@ func main() {
 		&model.ServiceAreaRecommendation{},
 		&model.GeoFenceAlert{},
 		&model.GeoFenceConfirmLog{},
+		&model.NightVisionConfig{},
+		&model.InfraredLightLog{},
+		&model.ImageEnhancementRecord{},
 	); err != nil {
 		logger.Sugar.Warnf("auto migrate failed: %v", err)
 	}

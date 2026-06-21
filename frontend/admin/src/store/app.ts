@@ -238,6 +238,132 @@ export interface GeoFenceCheckResult {
   message: string
 }
 
+export interface NightVisionConfig {
+  id: number
+  vehicle_id: number
+  device_id: string
+
+  infrared_enabled: boolean
+  infrared_auto_mode: boolean
+  infrared_manual_on: boolean
+  infrared_intensity: number
+  infrared_intensity_auto: boolean
+  low_light_threshold_lux: number
+  high_light_threshold_lux: number
+
+  enhancement_enabled: boolean
+  enhance_mode: 'auto' | 'night' | 'infrared' | 'low_light' | 'manual'
+  gamma_value: number
+  brightness_boost: number
+  contrast_boost: number
+  histogram_equalization: boolean
+  clahe_enabled: boolean
+  denoise_enabled: boolean
+  denoise_strength: number
+  sharpen_enabled: boolean
+  sharpen_strength: number
+
+  night_mode_auto: boolean
+  night_start_hour: number
+  night_end_hour: number
+  low_light_face_detect: boolean
+  min_face_confidence_night: number
+
+  created_at: string
+  updated_at: string
+}
+
+export interface InfraredLightLog {
+  id: number
+  vehicle_id: number
+  driver_id: number
+  device_id: string
+  action: 'turn_on' | 'turn_off' | 'intensity_change' | 'auto_trigger' | 'manual_trigger'
+  trigger_type: 'auto' | 'manual' | 'system'
+  light_on: boolean
+  intensity_before?: number
+  intensity_after?: number
+  light_level_lux?: number
+  reason: string
+  latitude: number
+  longitude: number
+  timestamp: string
+  face_detected_before?: boolean
+  face_detected_after?: boolean
+  confidence_before?: number
+  confidence_after?: number
+  created_at: string
+}
+
+export interface ImageEnhanceRecord {
+  id: number
+  vehicle_id: number
+  driver_id: number
+  waybill_id: number
+  device_id: string
+
+  original_image_url: string
+  enhanced_image_url: string
+
+  enhance_mode: string
+  gamma_value?: number
+  brightness_delta: number
+  contrast_delta: number
+  denoise_applied: boolean
+  denoise_strength: number
+  histogram_eq_applied: boolean
+  sharpen_applied: boolean
+
+  original_brightness_avg?: number
+  enhanced_brightness_avg?: number
+  original_contrast?: number
+  enhanced_contrast?: number
+
+  light_level_lux?: number
+  is_night_time: boolean
+
+  face_detected_original: boolean
+  face_detected_enhanced: boolean
+  face_confidence_original: number
+  face_confidence_enhanced: number
+  landmark_count_original: number
+  landmark_count_enhanced: number
+
+  quality_score_before: number
+  quality_score_after: number
+  quality_improvement_pct: number
+
+  processing_time_ms: number
+  process_on_edge: boolean
+
+  timestamp: string
+  created_at: string
+}
+
+export interface NightVisionStats {
+  total_configs: number
+  infrared_enabled_count: number
+  enhancement_enabled_count: number
+
+  today_infrared_turn_on_count: number
+  today_infrared_turn_off_count: number
+  today_infrared_duration_minutes: number
+
+  total_enhance_records: number
+  today_enhance_records: number
+  avg_quality_improvement_pct: number
+  avg_processing_time_ms: number
+
+  night_face_detect_rate_before: number
+  night_face_detect_rate_after: number
+  avg_face_confidence_before: number
+  avg_face_confidence_after: number
+  confidence_improvement_pct: number
+
+  auto_trigger_count: number
+  manual_trigger_count: number
+}
+
 export interface RescueRequest {
   id: number
   rescue_no: string

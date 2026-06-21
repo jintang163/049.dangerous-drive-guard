@@ -18,6 +18,10 @@ import type {
   GeoFenceAlertItem,
   GeoFenceStats,
   GeoFenceCheckResult,
+  NightVisionConfig,
+  InfraredLightLog,
+  ImageEnhanceRecord,
+  NightVisionStats,
 } from '@/store/app'
 
 export interface ApiResponse<T = any> {
@@ -373,6 +377,32 @@ export const fatigueApi = {
   getVideoURL: (alarmID: number) => api.get<{ url: string }>(`/fatigue/video/${alarmID}/video`),
   getSnapshotURL: (alarmID: number) => api.get<{ url: string }>(`/fatigue/video/${alarmID}/snapshot`),
   downloadVideo: (alarmID: number) => api.get<Blob>(`/fatigue/video/${alarmID}/download`, undefined, { responseType: 'blob' }),
+
+  getNightVisionStats: () => api.get<NightVisionStats>('/fatigue/night-vision/stats'),
+  getNightVisionConfig: (vehicleID: number) =>
+    api.get<NightVisionConfig>('/fatigue/night-vision/config', { params: { vehicle_id: vehicleID } }),
+  updateNightVisionConfig: (data: Partial<NightVisionConfig> & { vehicle_id: number }) =>
+    api.put<NightVisionConfig>('/fatigue/night-vision/config', data),
+  resetNightVisionConfig: (vehicleID: number) =>
+    api.post<NightVisionConfig>(`/fatigue/night-vision/config/${vehicleID}/reset`),
+  listNightVisionConfigs: (params?: PageParams) =>
+    api.getPage<NightVisionConfig>('/fatigue/night-vision/configs', params),
+  listInfraredLogs: (params?: PageParams & { vehicle_id?: number }) =>
+    api.getPage<InfraredLightLog>('/fatigue/night-vision/infrared/logs', params),
+  reportInfraredStatus: (data: { vehicle_id: number; light_on: boolean; intensity: number; light_level_lux?: number; reason?: string }) =>
+    api.post<any>('/fatigue/night-vision/infrared/report', data),
+  enhanceImage: (data: { vehicle_id: number; image_base64: string; enhance_mode?: string }) =>
+    api.post<{
+      enhanced_image_base64: string
+      quality_score_before: number
+      quality_score_after: number
+      quality_improvement_pct: number
+      processing_time_ms: number
+    }>('/fatigue/night-vision/enhance', data),
+  listEnhanceRecords: (params?: PageParams & { vehicle_id?: number }) =>
+    api.getPage<ImageEnhanceRecord>('/fatigue/night-vision/enhance/records', params),
+  getEnhanceRecord: (id: number) =>
+    api.get<ImageEnhanceRecord>(`/fatigue/night-vision/enhance/records/${id}`),
 }
 
 export const waybillApi = {
