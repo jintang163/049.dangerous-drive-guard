@@ -200,6 +200,20 @@ func ListAlarms(ctx context.Context, c *app.RequestContext) {
 	response.Page(c, alarms, total, page, pageSize)
 }
 
+func GetFusionAccuracyStats(ctx context.Context, c *app.RequestContext) {
+	initService()
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "90"))
+	if days <= 0 {
+		days = 90
+	}
+	stats, err := fatigueService.GetFusionAccuracyStats(ctx, days)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, stats)
+}
+
 func AckAlarm(ctx context.Context, c *app.RequestContext) {
 	initService()
 	alarmID, err := strconv.ParseInt(c.Param("id"), 10, 64)

@@ -327,6 +327,18 @@ export const fatigueApi = {
       fusion_method: string; fusion_confidence: number; occlusion_detected: boolean; backlit_detected: boolean;
       left_frame_url: string; center_frame_url: string; right_frame_url: string; used_cameras: string;
     }>(`/fatigue/history/${vehicleID}/multi-camera`, params),
+  getFusionAccuracyStats: (days = 90) =>
+    api.get<{
+      total_detections: number;
+      multi_camera_count: number;
+      single_camera_count: number;
+      alarm_count: number;
+      avg_score: number;
+      avg_confidence: number;
+      occlusion_count: number;
+      backlit_count: number;
+      multi_vs_single_improve_pct: number;
+    }>(`/fatigue/fusion/stats`, { days }),
   history: (params?: PageParams & { vehicle_id?: number; driver_id?: number }) =>
     api.getPage<{ id: number; vehicle_id: number; driver_id: number; fatigue_score: number; fatigue_level: string; detection_time: string; vehicle_speed: number; is_alarm_triggered: boolean }>('/fatigue/records', params),
   listAlarms: (params?: PageParams & { status?: string; level?: number; alarm_type?: string }) =>

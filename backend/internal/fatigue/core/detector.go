@@ -285,16 +285,37 @@ func (d *FatigueDetector) DetectMultiCamera(frames []model.MultiCameraFrame, win
 
 		score, _, alarmType, _ := d.Detect(frame.Landmarks, frame.Metrics, windowMetrics)
 		cameraScores[pos] = score
-		cameraConfidences[pos] = frame.Confidence
-		cameraQualities[pos] = frame.Quality
 
-		if frame.Occluded || frame.Backlit {
-			cameraConfidences[pos] *= 0.6
+		faceBBox := frame.Landmarks.FaceBoundingBox
+		brightness, contrast, quality := d.EstimateImageQuality(frame.Landmarks, faceBBox)
+		_ = brightness
+		_ = contrast
+		_ = quality
+
+		serverSideOccluded := d.DetectOcclusion(frame.Landmarks, frame.Metrics, faceBBox)
+		serverSideBacklit := d.DetectBacklightFromMetrics(frame.Metrics, frame.Landmarks, brightness, contrast)
+
+		serverSideQuality := quality
+		if frame.Quality > serverSideQuality {
+			serverSideQuality = frame.Quality
 		}
+		cameraQualities[pos] = serverSideQuality
+
+		confidence := frame.Confidence
+		if confidence <= 0 {
+			confidence = serverSideQuality
+		}
+		if serverSideOccluded || serverSideBacklit {
+			confidence *= 0.6
+		}
+		cameraConfidences[pos] = confidence
+
+		frame.Occluded = serverSideOccluded
+		frame.Backlit = serverSideBacklit
 
 		validCameras = append(validCameras, pos)
-		if frame.Quality > bestQuality {
-			bestQuality = frame.Quality
+		if serverSideQuality > bestQuality {
+			bestQuality = serverSideQuality
 			bestCamera = pos
 		}
 
@@ -469,4 +490,114 @@ func (d *FatigueDetector) buildFusionMessage(result *model.FusionResult, scores 
 	}
 
 	return strings.Join(parts, "；")
+}
+
+func (d *FatigueDetector) DetectOcclusion(landmarks model.FaceLandmarks, metrics model.FatigueMetrics, faceBBox []float64) bool {
+	if !landmarks.FaceDetected {
+		return true
+	}
+	if len(faceBBox) >= 4 {
+		width := faceBBox[2] - faceBBox[0]
+		height := faceBBox[3] - faceBBox[1]
+		area := width * height
+		if area < 40*40 {
+			return true
+		}
+		ratio := width / math.Max(height, 1)
+		if ratio < 0.4 || ratio > 2.5 {
+			return true
+		}
+	}
+	leftEAR := 0.0
+	rightEAR := 0.0
+	if len(landmarks.LeftEye) > 0 {
+		leftEAR = calcEAR(landmarks.LeftEye)
+	}
+	if len(landmarks.RightEye) > 0 {
+		rightEAR = calcEAR(landmarks.RightEye)
+	}
+	bothEyesBad := leftEAR < 0.05 && rightEAR < 0.05
+	if bothEyesBad && metrics.PERCLOS < 0.01 {
+		return true
+	}
+	mouthPoints := 0
+	if len(landmarks.Mouth) > 0 {
+		mouthPoints = len(landmarks.Mouth)
+	}
+	if mouthPoints < 3 && len(landmarks.LeftEye) < 3 && len(landmarks.RightEye) < 3 {
+		return true
+	}
+	return false
+}
+
+func (d *FatigueDetector) DetectBacklightFromMetrics(metrics model.FatigueMetrics, landmarks model.FaceLandmarks, brightnessEstimate float64, contrastEstimate float64) bool {
+	if brightnessEstimate > 220 {
+		if contrastEstimate < 20 {
+			return true
+		}
+	}
+	if brightnessEstimate < 30 {
+		if contrastEstimate < 15 {
+			return false
+		}
+	}
+	if !landmarks.FaceDetected && brightnessEstimate > 200 {
+		return true
+	}
+	if landmarks.FaceDetected {
+		leftEAR := 0.0
+		rightEAR := 0.0
+		if len(landmarks.LeftEye) > 0 {
+			leftEAR = calcEAR(landmarks.LeftEye)
+		}
+		if len(landmarks.RightEye) > 0 {
+			rightEAR = calcEAR(landmarks.RightEye)
+		}
+		avgEAR := (leftEAR + rightEAR) / 2
+		if brightnessEstimate > 230 && avgEAR < 0.15 && metrics.GazeDeviation > 0.5 {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *FatigueDetector) EstimateImageQuality(landmarks model.FaceLandmarks, faceBBox []float64) (float64, float64, float64) {
+	brightness := 128.0
+	contrast := 50.0
+	quality := 0.5
+
+	if !landmarks.FaceDetected {
+		return brightness, contrast, 0.0
+	}
+
+	pointCount := len(landmarks.LeftEye) + len(landmarks.RightEye) + len(landmarks.Mouth) + len(landmarks.Nose)
+	pointScore := math.Min(float64(pointCount)/20.0, 1.0)
+
+	sizeScore := 0.3
+	if len(faceBBox) >= 4 {
+		width := faceBBox[2] - faceBBox[0]
+		height := faceBBox[3] - faceBBox[1]
+		area := width * height
+		sizeScore = math.Min(area/(120.0*120.0), 1.0)
+	}
+
+	leftEAR := 0.0
+	rightEAR := 0.0
+	if len(landmarks.LeftEye) > 0 {
+		leftEAR = calcEAR(landmarks.LeftEye)
+	}
+	if len(landmarks.RightEye) > 0 {
+		rightEAR = calcEAR(landmarks.RightEye)
+	}
+	eyeScore := 0.0
+	if leftEAR > 0.05 && rightEAR > 0.05 {
+		eyeScore = 1.0
+	} else if leftEAR > 0.05 || rightEAR > 0.05 {
+		eyeScore = 0.5
+	}
+
+	quality = pointScore*0.4 + sizeScore*0.35 + eyeScore*0.25
+	quality = math.Max(0.0, math.Min(quality, 1.0))
+
+	return brightness, contrast, quality
 }

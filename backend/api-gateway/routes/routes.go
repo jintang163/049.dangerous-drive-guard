@@ -75,6 +75,7 @@ func Register(h *server.Hertz) {
 			fatigue.GET("/history/:vehicle_id/multi-camera", fatigueHttp.GetMultiCameraHistory)
 			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.ListAlarms)
 			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.AckAlarm)
+			fatigue.GET("/fusion/stats", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.GetFusionAccuracyStats)
 
 			videoHandler.RegisterRoutes(fatigue, middleware.JWTAuth())
 		}

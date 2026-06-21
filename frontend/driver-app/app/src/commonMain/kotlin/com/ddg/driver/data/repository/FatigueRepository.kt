@@ -2,6 +2,8 @@ package com.ddg.driver.data.repository
 
 import com.ddg.driver.data.model.AlarmInfo
 import com.ddg.driver.data.model.FatigueMetrics
+import com.ddg.driver.data.model.MultiCameraDetectResponse
+import com.ddg.driver.data.model.MultiCameraUploadRequest
 import com.ddg.driver.data.remote.ApiService
 
 class FatigueRepository(private val apiService: ApiService) {
@@ -10,6 +12,15 @@ class FatigueRepository(private val apiService: ApiService) {
         return try {
             apiService.uploadFatigueData(metrics)
             Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun uploadMultiCameraFrames(request: MultiCameraUploadRequest): Result<MultiCameraDetectResponse> {
+        return try {
+            val resp = apiService.uploadMultiCameraFrames(request)
+            Result.success(resp)
         } catch (e: Exception) {
             Result.failure(e)
         }

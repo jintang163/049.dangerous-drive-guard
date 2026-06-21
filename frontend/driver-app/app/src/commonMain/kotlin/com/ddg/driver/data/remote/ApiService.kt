@@ -4,6 +4,8 @@ import com.ddg.driver.data.model.AlarmInfo
 import com.ddg.driver.data.model.FatigueMetrics
 import com.ddg.driver.data.model.LoginRequest
 import com.ddg.driver.data.model.LoginResponse
+import com.ddg.driver.data.model.MultiCameraDetectResponse
+import com.ddg.driver.data.model.MultiCameraUploadRequest
 import com.ddg.driver.data.model.ReplanConfirmRequest
 import com.ddg.driver.data.model.RoutePlan
 import com.ddg.driver.data.model.ServiceArea
@@ -74,6 +76,13 @@ class ApiService(private val client: HttpClient) {
         client.post<Unit> {
             url("${ApiClient.BASE_URL}/fatigue/upload")
             setBody(metrics)
+        }
+    }
+
+    suspend fun uploadMultiCameraFrames(request: MultiCameraUploadRequest): MultiCameraDetectResponse {
+        return client.post {
+            url("${ApiClient.BASE_URL}/fatigue/upload/multi-camera")
+            setBody(request)
         }
     }
 

@@ -378,12 +378,27 @@ CREATE TABLE IF NOT EXISTS fatigue_detection_records (
     vehicle_speed DECIMAL(8,2),
     edge_computed TINYINT DEFAULT 1 COMMENT '边缘端计算',
     network_status VARCHAR(16) COMMENT 'online/offline/weak',
+    camera_position VARCHAR(20) DEFAULT 'center' COMMENT '摄像头位置 left/center/right/multi',
+    left_frame_url VARCHAR(256) COMMENT '左摄像头帧URL',
+    center_frame_url VARCHAR(256) COMMENT '中摄像头帧URL',
+    right_frame_url VARCHAR(256) COMMENT '右摄像头帧URL',
+    left_score DECIMAL(5,2) DEFAULT 0 COMMENT '左摄像头疲劳评分',
+    center_score DECIMAL(5,2) DEFAULT 0 COMMENT '中摄像头疲劳评分',
+    right_score DECIMAL(5,2) DEFAULT 0 COMMENT '右摄像头疲劳评分',
+    fusion_method VARCHAR(32) COMMENT '融合方法 single_camera/weighted_fusion/center_fallback',
+    fusion_confidence DECIMAL(5,4) DEFAULT 0 COMMENT '融合置信度 0-1',
+    occlusion_detected TINYINT DEFAULT 0 COMMENT '是否检测到遮挡',
+    backlit_detected TINYINT DEFAULT 0 COMMENT '是否检测到逆光',
+    used_cameras VARCHAR(64) COMMENT '实际参与融合的摄像头列表逗号分隔 left,center,right',
+    metrics JSON,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_vehicle_time (vehicle_id, detection_time DESC),
     INDEX idx_driver (driver_id, detection_time DESC),
     INDEX idx_waybill (waybill_id),
     INDEX idx_fatigue_level (fatigue_level),
-    INDEX idx_alarm (is_alarm_triggered, detection_time DESC)
+    INDEX idx_alarm (is_alarm_triggered, detection_time DESC),
+    INDEX idx_camera_position (camera_position),
+    INDEX idx_fusion_method (fusion_method)
 ) ENGINE=InnoDB COMMENT='疲劳检测记录表';
 
 CREATE TABLE IF NOT EXISTS fatigue_alarms (
@@ -701,6 +716,18 @@ SOURCE restricted_area_extension.sql;
 -- 来源: realtime_replan_extension.sql
 -- ============================================================
 SOURCE realtime_replan_extension.sql;
+
+-- ============================================================
+-- 电子押运模块扩展表（已合并主迁移）
+-- 来源: escort_extension.sql
+-- ============================================================
+SOURCE escort_extension.sql;
+
+-- ============================================================
+-- 多摄像头疲劳检测扩展表
+-- 来源: multi_camera_fatigue_extension.sql
+-- ============================================================
+SOURCE multi_camera_fatigue_extension.sql;
 
 -- ============================================================
 -- 外部路况接入说明

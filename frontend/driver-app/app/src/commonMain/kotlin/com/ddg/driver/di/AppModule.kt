@@ -12,6 +12,7 @@ import com.ddg.driver.data.repository.WaybillRepository
 import com.ddg.driver.domain.usecase.GetCurrentWaybillUseCase
 import com.ddg.driver.domain.usecase.LoginUseCase
 import com.ddg.driver.domain.usecase.ReportFatigueUseCase
+import com.ddg.driver.domain.usecase.ReportMultiCameraFatigueUseCase
 import com.ddg.driver.domain.usecase.ReportSOSUseCase
 import org.koin.dsl.module
 
@@ -30,5 +31,6 @@ val appModule = module {
     factory { LoginUseCase(get()) }
     factory { GetCurrentWaybillUseCase(get()) }
     factory { ReportFatigueUseCase(get()) }
+    factory { ReportMultiCameraFatigueUseCase(get()) }
     factory { ReportSOSUseCase(get()) }
 }

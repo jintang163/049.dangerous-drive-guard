@@ -106,10 +106,31 @@ const FatigueAlarms: React.FC = () => {
   const [handleModal, setHandleModal] = useState<AlarmItem | null>(null)
   const [handleForm] = Form.useForm()
   const [dashboardStats, setDashboardStats] = useState<StatData | null>(null)
+  const [fusionStats, setFusionStats] = useState<{
+    total_detections: number
+    multi_camera_count: number
+    single_camera_count: number
+    avg_confidence: number
+    multi_vs_single_improve_pct: number
+    occlusion_count: number
+    backlit_count: number
+  } | null>(null)
   const [detailVideoURL, setDetailVideoURL] = useState<string>('')
   const [detailSnapshotURL, setDetailSnapshotURL] = useState<string>('')
   const [detailLoading, setDetailLoading] = useState(false)
   const [statsLoading, setStatsLoading] = useState(false)
+
+  const fetchFusionStats = useCallback(async () => {
+    setStatsLoading(true)
+    try {
+      const res = await fatigueApi.getFusionAccuracyStats(90)
+      setFusionStats(res)
+    } catch (e) {
+      // ignore
+    } finally {
+      setStatsLoading(false)
+    }
+  }, [])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -155,7 +176,8 @@ const FatigueAlarms: React.FC = () => {
   useEffect(() => {
     fetchData()
     fetchDashboardStats()
-  }, [fetchData, fetchDashboardStats])
+    fetchFusionStats()
+  }, [fetchData, fetchDashboardStats, fetchFusionStats])
 
   useEffect(() => {
     const unsub1 = WebSocketManager.getInstance().on('new_alarm', async (alarm: AlarmItem) => {
@@ -291,6 +313,7 @@ const FatigueAlarms: React.FC = () => {
       handleForm.resetFields()
       fetchData()
       fetchDashboardStats()
+      fetchFusionStats()
     } catch (e) { }
   }
 
@@ -481,12 +504,24 @@ const FatigueAlarms: React.FC = () => {
           <Card bordered={false} style={{ borderRadius: 12 }} loading={statsLoading}>
             <Statistic
               title="融合准确率"
-              value={98}
+              value={fusionStats ? Math.round(fusionStats.avg_confidence || fusionStats.multi_vs_single_improve_pct || 85) : 85}
               suffix="%"
-              valueStyle={{ color: '#52c41a' }}
+              valueStyle={{ color: (fusionStats && (fusionStats.avg_confidence >= 95 || fusionStats.multi_vs_single_improve_pct >= 95)) ? '#52c41a' : (fusionStats && (fusionStats.avg_confidence >= 85 || fusionStats.multi_vs_single_improve_pct >= 85)) ? '#faad14' : '#fa8c16' }}
               prefix={<SafetyCertificateOutlined />}
             />
-            <Text type="secondary" style={{ fontSize: 11 }}>三摄融合 vs 单摄85%</Text>
+            <div style={{ marginTop: 4 }}>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                {fusionStats ? `三摄融合 vs 单摄 · 近90天${fusionStats.total_detections || 0}次检测` : '加载中...'}
+              </Text>
+            </div>
+            {fusionStats && (fusionStats.occlusion_count > 0 || fusionStats.backlit_count > 0) && (
+              <div style={{ marginTop: 2 }}>
+                <Space size={4}>
+                  {fusionStats.occlusion_count > 0 && <Tag color="red" style={{ fontSize: 10 }}>遮挡{fusionStats.occlusion_count}</Tag>}
+                  {fusionStats.backlit_count > 0 && <Tag color="gold" style={{ fontSize: 10 }}>逆光{fusionStats.backlit_count}</Tag>}
+                </Space>
+              </div>
+            )}
           </Card>
         </Col>
         <Col xs={24} sm={12} md={6}>
