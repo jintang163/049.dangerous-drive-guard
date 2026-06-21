@@ -358,6 +358,143 @@ export const monitorApi = {
     api.get<Blob>('/monitor/export/report', params, { responseType: 'blob' }),
 }
 
+export interface TimeScheduleRule {
+  weekdays: number[]
+  start_time: string
+  end_time: string
+  description?: string
+}
+
+export interface RestrictedAreaItem {
+  id: number
+  name: string
+  area_type: string
+  shape_type: 'polygon' | 'circle'
+  level: number
+  province?: string
+  city?: string
+  district?: string
+  address?: string
+  boundary_polygon: any
+  center_latitude: number
+  center_longitude: number
+  radius: number
+  restrict_hazard_classes?: string
+  restrict_vehicle_types?: string
+  height_limit?: number
+  weight_limit?: number
+  time_schedule?: TimeScheduleRule[]
+  effective_from?: string
+  effective_to?: string
+  source?: string
+  is_temporary: number
+  temp_reason?: string
+  template_id?: number
+  gis_import_id?: string
+  created_by?: number
+  approval_status: 0 | 1 | 2 | 3 | 4 | 5
+  first_approver_id?: number
+  first_approval_at?: string
+  first_approval_note?: string
+  second_approver_id?: number
+  second_approval_at?: string
+  second_approval_note?: string
+  status: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RestrictedAreaTemplate {
+  id: number
+  template_name: string
+  template_category: 'hospital' | 'school' | 'mall' | 'water_source' | 'custom'
+  area_type: string
+  level: number
+  default_radius: number
+  restrict_hazard_classes?: string
+  restrict_vehicle_types?: string
+  height_limit?: number
+  weight_limit?: number
+  time_rules?: TimeScheduleRule[]
+  description?: string
+  is_builtin: number
+  is_enabled: number
+  created_by?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ApprovalRecord {
+  id: number
+  area_id: number
+  approval_level: number
+  approver_id: number
+  approver_name: string
+  approval_action: string
+  approval_note?: string
+  old_status: number
+  new_status: number
+  created_at: string
+}
+
+export interface GisImportRecord {
+  id: number
+  import_batch_no: string
+  file_name?: string
+  source_type: string
+  total_count: number
+  success_count: number
+  failed_count: number
+  failed_details?: any
+  import_status: string
+  imported_by?: number
+  created_at: string
+}
+
+export const restrictedAreaApi = {
+  list: (params?: PageParams & {
+    area_type?: string
+    is_temporary?: number
+    approval_status?: number
+    keyword?: string
+  }) => api.getPage<RestrictedAreaItem>('/restricted-areas', params),
+  get: (id: number) => api.get<RestrictedAreaItem>(`/restricted-areas/${id}`),
+  create: (data: Partial<RestrictedAreaItem> & { submit_approval?: boolean; time_schedule?: TimeScheduleRule[] }) =>
+    api.post<RestrictedAreaItem>('/restricted-areas', data),
+  update: (id: number, data: Partial<RestrictedAreaItem> & { time_schedule?: TimeScheduleRule[] }) =>
+    api.put<RestrictedAreaItem>(`/restricted-areas/${id}`, data),
+  delete: (id: number) => api.delete(`/restricted-areas/${id}`),
+  submitApproval: (id: number) => api.post<{ success: boolean }>(`/restricted-areas/${id}/submit`),
+  approveFirst: (id: number, data: { approval_note?: string }) =>
+    api.post<{ success: boolean }>(`/restricted-areas/${id}/approve/first`, data),
+  approveSecond: (id: number, data: { approval_note?: string }) =>
+    api.post<{ success: boolean }>(`/restricted-areas/${id}/approve/second`, data),
+  reject: (id: number, level: number, data: { approval_note?: string }) =>
+    api.post<{ success: boolean }>(`/restricted-areas/${id}/reject?level=${level}`, data),
+  revoke: (id: number, data: { approval_note?: string }) =>
+    api.post<{ success: boolean }>(`/restricted-areas/${id}/revoke`, data),
+  getApprovalHistory: (id: number) =>
+    api.get<{ list: ApprovalRecord[]; total: number }>(`/restricted-areas/${id}/approvals`),
+  listPendingApprovals: (params?: { level?: number; page?: number; page_size?: number }) =>
+    api.getPage<RestrictedAreaItem>('/restricted-areas/approvals/pending', params),
+
+  listTemplates: (params?: PageParams & { category?: string }) =>
+    api.getPage<RestrictedAreaTemplate>('/restricted-areas/templates', params),
+  getTemplate: (id: number) => api.get<RestrictedAreaTemplate>(`/restricted-areas/templates/${id}`),
+  createTemplate: (data: Partial<RestrictedAreaTemplate> & { time_rules?: TimeScheduleRule[] }) =>
+    api.post<RestrictedAreaTemplate>('/restricted-areas/templates', data),
+  updateTemplate: (id: number, data: Partial<RestrictedAreaTemplate> & { time_rules?: TimeScheduleRule[] }) =>
+    api.put<RestrictedAreaTemplate>(`/restricted-areas/templates/${id}`, data),
+  deleteTemplate: (id: number) => api.delete(`/restricted-areas/templates/${id}`),
+  applyTemplate: (templateId: number, data: { center_lat: number; center_lng: number; name?: string; address?: string }) =>
+    api.post<RestrictedAreaItem>(`/restricted-areas/templates/${templateId}/apply`, data),
+
+  importGis: (data: { source_type: string; file_name?: string; features: any }) =>
+    api.post<GisImportRecord>('/restricted-areas/gis/import', data),
+  listGisImports: (params?: PageParams) =>
+    api.getPage<GisImportRecord>('/restricted-areas/gis/imports', params),
+}
+
 export const minioApi = {
   getConfig: () => api.get<{ endpoint: string; bucket: string; region: string; access_key: string }>('/minio/config'),
   getPresignedUrl: (object_name: string, expires_in?: number) =>

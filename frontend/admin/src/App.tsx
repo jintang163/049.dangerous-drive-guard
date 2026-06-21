@@ -14,6 +14,7 @@ import Escort from '@/pages/Escort'
 import Rescue from '@/pages/Rescue'
 import Weather from '@/pages/Weather'
 import Blockchain from '@/pages/Blockchain'
+import RestrictedAreas from '@/pages/RestrictedAreas'
 import Profile from '@/pages/Profile'
 import NotFound from '@/pages/NotFound'
 import RequireAuth from '@/components/RequireAuth'
@@ -42,6 +43,7 @@ const App: React.FC = () => {
         <Route path="rescue" element={<Rescue />} />
         <Route path="weather" element={<Weather />} />
         <Route path="blockchain" element={<Blockchain />} />
+        <Route path="restricted-areas" element={<RestrictedAreas />} />
         <Route path="profile" element={<Profile />} />
       </Route>
       <Route path="/big-screen" element={<DashboardLayout />} />

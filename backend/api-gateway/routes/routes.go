@@ -12,6 +12,7 @@ import (
 	fatigueSvc "github.com/dangerous-drive-guard/backend/internal/fatigue/service"
 	monitorHttp "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/http"
 	monitorWs "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
+	restrictedHttp "github.com/dangerous-drive-guard/backend/internal/restricted/delivery/http"
 	routeHandler "github.com/dangerous-drive-guard/backend/internal/route/delivery/http"
 	transportHandler "github.com/dangerous-drive-guard/backend/internal/transport/delivery/http"
 	userHttp "github.com/dangerous-drive-guard/backend/internal/user/delivery/http"
@@ -113,5 +114,38 @@ func Register(h *server.Hertz) {
 		weatherHandler.RegisterRoutes(api, middleware.JWTAuth())
 
 		blockchainHandler.RegisterRoutes(api, middleware.JWTAuth())
+
+		restricted := api.Group("/restricted-areas", middleware.JWTAuth())
+		{
+			restricted.GET("", restrictedHttp.ListAreas)
+			restricted.GET("/:id", restrictedHttp.GetArea)
+			restricted.POST("", restrictedHttp.CreateArea)
+			restricted.PUT("/:id", restrictedHttp.UpdateArea)
+			restricted.DELETE("/:id", middleware.RoleAuth("admin"), restrictedHttp.DeleteArea)
+
+			restricted.POST("/:id/submit", restrictedHttp.SubmitApproval)
+			restricted.POST("/:id/approve/first", middleware.RoleAuth("admin", "dispatcher"), restrictedHttp.ApproveFirstLevel)
+			restricted.POST("/:id/approve/second", middleware.RoleAuth("admin"), restrictedHttp.ApproveSecondLevel)
+			restricted.POST("/:id/reject", middleware.RoleAuth("admin", "dispatcher"), restrictedHttp.RejectApproval)
+			restricted.POST("/:id/revoke", middleware.RoleAuth("admin"), restrictedHttp.RevokeApproval)
+			restricted.GET("/:id/approvals", restrictedHttp.GetApprovalHistory)
+			restricted.GET("/approvals/pending", middleware.RoleAuth("admin", "dispatcher"), restrictedHttp.ListPendingApprovals)
+
+			templates := restricted.Group("/templates")
+			{
+				templates.GET("", restrictedHttp.ListTemplates)
+				templates.GET("/:id", restrictedHttp.GetTemplate)
+				templates.POST("", middleware.RoleAuth("admin"), restrictedHttp.CreateTemplate)
+				templates.PUT("/:id", middleware.RoleAuth("admin"), restrictedHttp.UpdateTemplate)
+				templates.DELETE("/:id", middleware.RoleAuth("admin"), restrictedHttp.DeleteTemplate)
+				templates.POST("/:id/apply", restrictedHttp.ApplyTemplate)
+			}
+
+			gis := restricted.Group("/gis", middleware.RoleAuth("admin"))
+			{
+				gis.POST("/import", restrictedHttp.ImportGisData)
+				gis.GET("/imports", restrictedHttp.ListGisImports)
+			}
+		}
 	}
 }
