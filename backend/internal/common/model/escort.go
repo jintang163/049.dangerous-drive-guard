@@ -230,6 +230,14 @@ type RealtimeVehicleStatus struct {
 	MarkerColor    string        `json:"marker_color"`
 	LastUpdateTime time.Time     `json:"last_update_time"`
 	GPSTime        time.Time     `json:"gps_time"`
+	GoodsName      string        `json:"goods_name"`
+	DangerGoods    string        `json:"danger_goods"`
+	DriverStatus   string        `json:"driver_status"`
+	CoverURL       string        `json:"cover_url"`
+	FrameURL       string        `json:"frame_url"`
+	VideoURL       string        `json:"video_url"`
+	LiveURL        string        `json:"live_url"`
+	Location       string        `json:"location"`
 }
 
 type EscortEvent struct {

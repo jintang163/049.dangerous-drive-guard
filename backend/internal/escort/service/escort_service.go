@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	"github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
+	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
+	"github.com/dangerous-drive-guard/backend/pkg/storage"
 )
 
 type EscortService struct {
@@ -302,21 +305,46 @@ func (s *EscortService) ReportSOS(ctx context.Context, req *model.EscortSOSRepor
 
 	hub := ws.GetHub()
 	alertData := map[string]interface{}{
-		"id":           id,
-		"alert_no":     alertNo,
-		"vehicle_id":   req.VehicleID,
-		"plate_number": plateNumber,
-		"driver_name":  driverName,
-		"alert_type":   req.AlertType,
-		"alert_level":  alertLevel,
-		"latitude":     req.Latitude,
-		"longitude":    req.Longitude,
-		"address":      req.Address,
-		"description":  req.Description,
-		"snapshot_url": req.SnapshotURL,
-		"timestamp":    now.Format("2006-01-02 15:04:05"),
-		"popup":        true,
+		"id":            id,
+		"alert_no":      alertNo,
+		"vehicle_id":    req.VehicleID,
+		"plate_number":  plateNumber,
+		"vehicle_plate": plateNumber,
+		"driver_id":     req.DriverID,
+		"driver_name":   driverName,
+		"waybill_id":    req.WaybillID,
+		"waybill_no":    waybillNo,
+		"sos_type":      req.AlertType,
+		"alert_type":    req.AlertType,
+		"alert_level":   alertLevel,
+		"latitude":      req.Latitude,
+		"longitude":     req.Longitude,
+		"location":      req.Address,
+		"address":       req.Address,
+		"description":   req.Description,
+		"snapshot_url":  req.SnapshotURL,
+		"status":        model.EscortSOSPending,
+		"created_at":    now,
+		"timestamp":     now.Format("2006-01-02 15:04:05"),
+		"popup":         true,
 	}
+
+	minioClient := storage.GetMinIO()
+	if minioClient != nil {
+		videoObj := fmt.Sprintf("escort/sos/%s.mp4", alertNo)
+		if liveURL, err := minioClient.GetVideoPlayURL(ctx, videoObj, 24*time.Hour); err == nil {
+			alertData["video_url"] = liveURL
+			alertData["live_url"] = liveURL
+		}
+		if req.SnapshotURL != "" && !strings.HasPrefix(req.SnapshotURL, "http") {
+			imgObj := strings.TrimPrefix(req.SnapshotURL, "/images/")
+			imgObj = strings.TrimPrefix(imgObj, "/")
+			if imgURL, err := minioClient.GetImageURL(ctx, imgObj, 24*time.Hour); err == nil {
+				alertData["snapshot_url"] = imgURL
+			}
+		}
+	}
+
 	alertMsg := &ws.WSMessage{
 		Type:      ws.MsgSOSAlert,
 		Timestamp: now.Unix(),
@@ -324,7 +352,7 @@ func (s *EscortService) ReportSOS(ctx context.Context, req *model.EscortSOSRepor
 	}
 	data, _ := json.Marshal(alertMsg)
 	_ = data
-	hub.BroadcastSOS(ctx, alert)
+	hub.BroadcastSOS(ctx, alertData)
 
 	recordNo := s.generateNo("VR")
 	s.db.WithContext(ctx).Exec(`
@@ -482,12 +510,33 @@ func (s *EscortService) GetVideoRecords(ctx context.Context, vehicleID, waybillI
 	}
 	defer rows.Close()
 
+	minioClient := storage.GetMinIO()
 	for rows.Next() {
 		var r model.EscortVideoRecord
 		rows.Scan(&r.ID, &r.RecordNo, &r.VehicleID, &r.PlateNumber, &r.WaybillID,
 			&r.WaybillNo, &r.RecordType, &r.VideoURL, &r.SnapshotURL, &r.StartTime,
 			&r.EndTime, &r.Duration, &r.Latitude, &r.Longitude, &r.TriggerReason,
 			&r.AlertID, &r.ViewedCount, &r.ExpireAt, &r.CreatedAt, &r.UpdatedAt)
+
+		if minioClient != nil {
+			if r.VideoURL != "" && !strings.HasPrefix(r.VideoURL, "http") {
+				objectName := strings.TrimPrefix(r.VideoURL, "/videos/")
+				objectName = strings.TrimPrefix(objectName, "minio://")
+				objectName = strings.TrimPrefix(objectName, "/")
+				if playURL, err := minioClient.GetVideoPlayURL(ctx, objectName, 24*time.Hour); err == nil {
+					r.VideoURL = playURL
+				}
+			}
+			if r.SnapshotURL != "" && !strings.HasPrefix(r.SnapshotURL, "http") {
+				objectName := strings.TrimPrefix(r.SnapshotURL, "/images/")
+				objectName = strings.TrimPrefix(objectName, "minio://")
+				objectName = strings.TrimPrefix(objectName, "/")
+				if imgURL, err := minioClient.GetImageURL(ctx, objectName, 24*time.Hour); err == nil {
+					r.SnapshotURL = imgURL
+				}
+			}
+		}
+
 		records = append(records, &r)
 	}
 	return records, total, nil
@@ -618,7 +667,9 @@ func (s *EscortService) GetEscortVehiclesForPolling(ctx context.Context, escortI
 	rows, err := s.db.WithContext(ctx).Raw(`
 		SELECT DISTINCT eva.vehicle_id, v.plate_number, v.vehicle_type, v.status, v.driver_id,
 		       u.real_name as driver_name, w.id as waybill_id, w.waybill_no,
-		       f.latitude, f.longitude, f.vehicle_speed, f.fatigue_score, f.fatigue_level, f.detection_time
+		       w.danger_goods_name, w.origin_address, w.dest_address,
+		       f.latitude, f.longitude, f.vehicle_speed, f.fatigue_score, f.fatigue_level, f.detection_time,
+		       f.frame_url, f.video_url
 		FROM escort_vehicle_assignments eva
 		INNER JOIN escort_shifts es ON es.id = eva.shift_id
 		LEFT JOIN vehicles v ON v.id = eva.vehicle_id
@@ -641,15 +692,31 @@ func (s *EscortService) GetEscortVehiclesForPolling(ctx context.Context, escortI
 	}
 	defer rows.Close()
 
+	minioClient := storage.GetMinIO()
 	var result []*model.RealtimeVehicleStatus
 	for rows.Next() {
 		var vs model.RealtimeVehicleStatus
 		var lat, lng, speed, fatigueScore interface{}
 		var detectionTime interface{}
+		var frameURL, videoURL interface{}
+		var goodsName, origin, dest interface{}
 		rows.Scan(&vs.VehicleID, &vs.PlateNumber, &vs.VehicleType, &vs.Status,
 			&vs.DriverID, &vs.DriverName, &vs.WaybillID, &vs.WaybillNo,
-			&lat, &lng, &speed, &fatigueScore, &vs.FatigueLevel, &detectionTime)
+			&goodsName, &origin, &dest,
+			&lat, &lng, &speed, &fatigueScore, &vs.FatigueLevel, &detectionTime,
+			&frameURL, &videoURL)
 
+		if g, ok := goodsName.(string); ok {
+			vs.DangerGoods = g
+			vs.GoodsName = g
+		}
+		if o, ok := origin.(string); ok {
+			if d, ok2 := dest.(string); ok2 {
+				vs.Location = fmt.Sprintf("%s → %s 途中",
+					strings.Split(o, "区")[0]+"区",
+					strings.Split(d, "区")[0]+"区")
+			}
+		}
 		if lat != nil {
 			vs.Latitude = toFloat(lat)
 		}
@@ -665,6 +732,35 @@ func (s *EscortService) GetEscortVehiclesForPolling(ctx context.Context, escortI
 		if t, ok := detectionTime.(time.Time); ok {
 			vs.LastUpdateTime = t
 		}
+		if vs.FatigueLevel == "normal" {
+			vs.DriverStatus = "正常"
+		} else if vs.FatigueLevel == "mild" {
+			vs.DriverStatus = "轻度疲劳"
+		} else if vs.FatigueLevel == "severe" {
+			vs.DriverStatus = "严重疲劳"
+		} else {
+			vs.DriverStatus = "正常"
+		}
+
+		if minioClient != nil {
+			if fu, ok := frameURL.(string); ok && fu != "" && !strings.HasPrefix(fu, "http") {
+				objectName := strings.TrimPrefix(fu, "/images/")
+				objectName = strings.TrimPrefix(objectName, "/")
+				if imgURL, err := minioClient.GetImageURL(ctx, objectName, time.Hour); err == nil {
+					vs.CoverURL = imgURL
+					vs.FrameURL = imgURL
+				}
+			}
+			if vu, ok := videoURL.(string); ok && vu != "" && !strings.HasPrefix(vu, "http") {
+				objectName := strings.TrimPrefix(vu, "/videos/")
+				objectName = strings.TrimPrefix(objectName, "/")
+				if playURL, err := minioClient.GetVideoPlayURL(ctx, objectName, 24*time.Hour); err == nil {
+					vs.VideoURL = playURL
+					vs.LiveURL = playURL
+				}
+			}
+		}
+
 		result = append(result, &vs)
 	}
 	return result, nil
@@ -747,4 +843,111 @@ func toFloat(v interface{}) float64 {
 	default:
 		return 0
 	}
+}
+
+func (s *EscortService) CleanupExpiredVideos(ctx context.Context) (int64, error) {
+	var expiredRecords []struct {
+		ID       int64  `json:"id"`
+		FileURL  string `json:"file_url"`
+		Snapshot string `json:"snapshot_url"`
+	}
+	err := s.db.WithContext(ctx).Raw(`
+		SELECT id, file_url, snapshot_url
+		FROM escort_video_records
+		WHERE expire_at <= NOW() AND deleted_at IS NULL
+		LIMIT 1000
+	`).Scan(&expiredRecords).Error
+	if err != nil {
+		logger.Sugar.Errorf("query expired videos error: %v", err)
+		return 0, err
+	}
+	if len(expiredRecords) == 0 {
+		return 0, nil
+	}
+
+	ids := make([]int64, len(expiredRecords))
+	for i, r := range expiredRecords {
+		ids[i] = r.ID
+		if r.FileURL != "" {
+			go deleteVideoFile(r.FileURL)
+		}
+		if r.Snapshot != "" && r.Snapshot != r.FileURL {
+			go deleteVideoFile(r.Snapshot)
+		}
+	}
+
+	result := s.db.WithContext(ctx).Exec(`
+		DELETE FROM escort_video_records WHERE id IN (?)
+	`, ids)
+	if result.Error != nil {
+		logger.Sugar.Errorf("delete expired videos error: %v", result.Error)
+		return 0, result.Error
+	}
+
+	logger.Global.Info("Cleanup expired escort videos",
+		zap.Int("count", len(expiredRecords)),
+		zap.Int64s("deleted_ids", ids),
+	)
+	return result.RowsAffected, nil
+}
+
+func deleteVideoFile(fileURL string) {
+	if fileURL == "" {
+		return
+	}
+	if strings.HasPrefix(fileURL, "/videos/") {
+		filePath := config.Global.Storage.UploadDir + fileURL
+		_ = os.Remove(filePath)
+		return
+	}
+	if strings.HasPrefix(fileURL, "/images/") {
+		filePath := config.Global.Storage.UploadDir + fileURL
+		_ = os.Remove(filePath)
+		return
+	}
+	objectName := strings.TrimPrefix(fileURL, "minio://")
+	objectName = strings.TrimPrefix(objectName, "/videos/")
+	objectName = strings.TrimPrefix(objectName, "/images/")
+	objectName = strings.TrimPrefix(objectName, "/")
+	if objectName != "" && !strings.HasPrefix(fileURL, "http") {
+		minioClient := storage.GetMinIO()
+		if minioClient != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if strings.Contains(fileURL, "images") || strings.Contains(fileURL, ".jpg") || strings.Contains(fileURL, ".png") {
+				_ = minioClient.DeleteImage(ctx, objectName)
+			} else {
+				_ = minioClient.DeleteVideo(ctx, objectName)
+			}
+		}
+	}
+}
+
+func (s *EscortService) StartCleanupTask(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
+		logger.Global.Info("Escort video cleanup task started, runs every 24 hours")
+
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Global.Info("Escort video cleanup task stopped")
+				return
+			case <-ticker.C:
+				runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				count, err := s.CleanupExpiredVideos(runCtx)
+				if err != nil {
+					logger.Sugar.Errorf("cleanup expired videos error: %v", err)
+				} else if count > 0 {
+					logger.Global.Info("Cleanup expired escort videos completed",
+						zap.Int64("deleted_count", count))
+				} else {
+					logger.Global.Info("No expired escort videos to cleanup")
+				}
+				cancel()
+			}
+		}
+	}()
 }

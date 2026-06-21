@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/dangerous-drive-guard/backend/api-gateway/routes"
+	escortSvc "github.com/dangerous-drive-guard/backend/internal/escort/service"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
@@ -77,6 +78,9 @@ func main() {
 	})
 
 	routes.Register(h)
+
+	escortService := escortSvc.NewEscortService()
+	escortService.StartCleanupTask(context.Background())
 
 	logger.Sugar.Infof("API Gateway started on :%d", cfg.Server.APIPort)
 	h.Spin()

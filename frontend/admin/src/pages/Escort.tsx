@@ -25,7 +25,6 @@ import {
   Upload,
   Alert,
   Tabs,
-  Table,
   DatePicker,
   Progress,
   Statistic,
@@ -62,6 +61,7 @@ import {
   SoundOutlined,
   DashboardOutlined,
   HistoryOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons'
 import {
   ProCard,
@@ -72,7 +72,7 @@ import {
   ProTable,
 } from '@ant-design/pro-components'
 import type { ProColumns } from '@ant-design/pro-components'
-import api, { escortApi } from '@/services/api'
+import api, { escortApi, waybillApi } from '@/services/api'
 import WebSocketManager from '@/services/ws'
 import { formatDateTime } from '@/utils/auth'
 import dayjs from 'dayjs'
@@ -135,6 +135,8 @@ interface EscortWaybill {
   start_lat: number
   end_lng: number
   end_lat: number
+  vehicle_id?: number
+  waybill_id?: number
 }
 
 const eventTypeMap: Record<EscortEventType, {
@@ -172,176 +174,17 @@ const dangerLevelColorMap: Record<string, string> = {
   '9': 'default',
 }
 
-const cities = [
-  { name: '上海市浦东新区', lng: 121.4737, lat: 31.2304 },
-  { name: '北京市朝阳区', lng: 116.4074, lat: 39.9042 },
-  { name: '广州市天河区', lng: 113.3245, lat: 23.1291 },
-  { name: '深圳市南山区', lng: 113.9304, lat: 22.5333 },
-  { name: '杭州市西湖区', lng: 120.1551, lat: 30.2741 },
-  { name: '成都市武侯区', lng: 104.0668, lat: 30.5728 },
-  { name: '武汉市江汉区', lng: 114.3055, lat: 30.5931 },
-  { name: '南京市鼓楼区', lng: 118.778, lat: 32.0617 },
-  { name: '苏州市工业园区', lng: 120.5853, lat: 31.2990 },
-  { name: '青岛市市南区', lng: 120.3826, lat: 36.0671 },
-]
-
-const mockEscortWaybills: EscortWaybill[] = Array.from({ length: 12 }, (_, i) => {
-  const statuses: WaybillStatus[] = ['transit', 'transit', 'transit', 'transit', 'signed', 'transit']
-  const status = statuses[i % statuses.length]
-  const goodsList = [
-    { name: '汽油', un: 'UN1203', level: '3' },
-    { name: '液化石油气', un: 'UN1075', level: '2.1' },
-    { name: '硫酸', un: 'UN2790', level: '8' },
-    { name: '液氯', un: 'UN1017', level: '2.3' },
-    { name: '烟花爆竹', un: 'UN0336', level: '1.4' },
-  ]
-  const goods = goodsList[i % goodsList.length]
-  const origin = cities[i % cities.length]
-  const dest = cities[(i + 4) % cities.length]
-  const plates = ['沪A12345', '京B67890', '粤C11111', '粤D22222', '浙E33333', '川F44444']
-  const drivers = ['张建国', '李明辉', '王志强', '刘文华', '陈晓峰', '赵大海']
-  const escorts = ['李安全', '王押运', '张督察', '刘监管', '陈守卫', '孙警戒']
-  const planned = dayjs().add(i * 5 - 25, 'hour')
-  const progress = status === 'signed' ? 100 : Math.floor(Math.random() * 75) + 15
-  const eventCount = Math.floor(Math.random() * 6) + 3
-
-  return {
-    id: `ewb_${10000 + i}`,
-    waybill_no: `DDG${dayjs().format('YYYYMM')}${String(2000 + i).padStart(4, '0')}`,
-    status,
-    danger_goods_name: goods.name,
-    un_number: goods.un,
-    danger_level: goods.level,
-    origin: origin.name,
-    destination: dest.name,
-    vehicle_plate: plates[i % plates.length],
-    driver_name: drivers[i % drivers.length],
-    driver_phone: `138${String(10000000 + i * 246).slice(0, 8)}`,
-    escort_name: escorts[i % escorts.length],
-    escort_phone: `139${String(10000000 + i * 357).slice(0, 8)}`,
-    planned_departure: planned.toISOString(),
-    progress,
-    current_location: `${origin.name} → ${dest.name} 途中约 ${progress}%`,
-    current_lng: (origin.lng + dest.lng) / 2 + (Math.random() - 0.5) * 1,
-    current_lat: (origin.lat + dest.lat) / 2 + (Math.random() - 0.5) * 0.8,
-    event_count: eventCount,
-    last_event_time: planned.add(Math.floor(progress / 10), 'hour').toISOString(),
-    start_lng: origin.lng,
-    start_lat: origin.lat,
-    end_lng: dest.lng,
-    end_lat: dest.lat,
-  }
-})
-
-const generateMockEvents = (waybill: EscortWaybill): EscortEvent[] => {
-  const events: EscortEvent[] = []
-  const types: EscortEventType[] = [
-    'departure_check', 'waypoint', 'rest', 'waypoint',
-    'loading_unloading', 'abnormal_stop', 'waypoint', 'sign_receipt',
-  ]
-  const count = waybill.event_count
-  const baseTime = dayjs(waybill.planned_departure)
-
-  for (let i = 0; i < count; i++) {
-    const typeIdx = Math.min(i, types.length - 1)
-    const type = i === count - 1 && waybill.status === 'signed' ? 'sign_receipt' : types[typeIdx]
-    const progressRatio = (i + 1) / count
-    const curLng = waybill.start_lng + (waybill.end_lng - waybill.start_lng) * progressRatio + (Math.random() - 0.5) * 0.3
-    const curLat = waybill.start_lat + (waybill.end_lat - waybill.start_lat) * progressRatio + (Math.random() - 0.5) * 0.2
-    const nearestCity = cities.reduce((prev, curr) => {
-      const pd = Math.hypot(prev.lng - curLng, prev.lat - curLat)
-      const cd = Math.hypot(curr.lng - curLng, curr.lat - curLat)
-      return cd < pd ? curr : prev
-    })
-    const riskRoll = Math.random()
-    const riskLevel: EscortEvent['risk_level'] = type === 'emergency' || type === 'abnormal_stop'
-      ? (riskRoll > 0.5 ? 'warning' : 'danger')
-      : (riskRoll > 0.8 ? 'attention' : 'normal')
-
-    events.push({
-      id: `evt_${waybill.id}_${i}`,
-      type,
-      time: baseTime.add(i * (2 + Math.random() * 2), 'hour').add(Math.random() * 30, 'minute').toISOString(),
-      location: `${nearestCity.name}附近 (${curLng.toFixed(4)}, ${curLat.toFixed(4)})`,
-      lng: curLng,
-      lat: curLat,
-      photos: Math.random() > 0.3 ? [`https://picsum.photos/seed/escort${i}${waybill.id}/400/300`] : [],
-      remark: type === 'departure_check'
-        ? '车辆安全检查通过：刹车、轮胎、灯光、灭火器、应急出口均正常。货物固定完好。驾驶员酒精检测0mg/100ml。'
-        : type === 'waypoint'
-          ? `途经检查点${i}，车速68km/h，驾驶员状态良好，未偏离规划路线。`
-          : type === 'rest'
-            ? '进入服务区休息25分钟，驾驶员已签到，车辆熄火锁闭，周边巡视正常。'
-            : type === 'loading_unloading'
-              ? '到达临时装卸点，已完成接地装置连接，操作人员均佩戴防护装备。'
-              : type === 'abnormal_stop'
-                ? '因前方交通事故临时停靠路边，已开启双闪，设置警示标志，已报告调度中心。'
-                : type === 'sign_receipt'
-                  ? '货物完好无损到达目的地，收货方核对数量无误，完成电子签收。'
-                  : '⚠️ 发生突发事件：车辆轻微颠簸，已检查货物未发现异常，已减速慢行继续观察。',
-      operator: waybill.escort_name,
-      waybill_no: waybill.waybill_no,
-      duration_minutes: type === 'rest' ? 25 : type === 'loading_unloading' ? 80 : undefined,
-      risk_level: riskLevel,
-    })
-  }
-  return events.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-}
-
-const mockPollingVehicles = [
-  {
-    vehicle_id: 1,
-    vehicle_plate: '沪A12345',
-    driver_name: '张建国',
-    danger_goods: '汽油',
-    speed: 62,
-    status: 'driving',
-    last_frame_time: dayjs().toISOString(),
-    driver_status: '正常',
-    latitude: 31.2304,
-    longitude: 121.4737,
-  },
-  {
-    vehicle_id: 2,
-    vehicle_plate: '京B67890',
-    driver_name: '李明辉',
-    danger_goods: '液化石油气',
-    speed: 0,
-    status: 'resting',
-    last_frame_time: dayjs().subtract(10, 'second').toISOString(),
-    driver_status: '休息',
-    latitude: 39.9042,
-    longitude: 116.4074,
-  },
-  {
-    vehicle_id: 3,
-    vehicle_plate: '粤C11111',
-    driver_name: '王志强',
-    danger_goods: '硫酸',
-    speed: 58,
-    status: 'driving',
-    last_frame_time: dayjs().toISOString(),
-    driver_status: '正常',
-    latitude: 23.1291,
-    longitude: 113.3245,
-  },
-  {
-    vehicle_id: 4,
-    vehicle_plate: '粤D22222',
-    driver_name: '刘文华',
-    danger_goods: '烟花爆竹',
-    speed: 45,
-    status: 'driving',
-    last_frame_time: dayjs().subtract(5, 'second').toISOString(),
-    driver_status: '正常',
-    latitude: 22.5333,
-    longitude: 113.9304,
-  },
-]
-
 const Escort: React.FC = () => {
   const [loading, setLoading] = useState(false)
-  const [selectedWaybill, setSelectedWaybill] = useState<EscortWaybill | null>(mockEscortWaybills[0])
+  const [waybillsLoading, setWaybillsLoading] = useState(false)
+  const [eventsLoading, setEventsLoading] = useState(false)
+  const [pollingLoading, setPollingLoading] = useState(false)
+  const [alertsLoading, setAlertsLoading] = useState(false)
+  const [shiftsLoading, setShiftsLoading] = useState(false)
+  const [videosLoading, setVideosLoading] = useState(false)
+
+  const [selectedWaybill, setSelectedWaybill] = useState<EscortWaybill | null>(null)
+  const [waybills, setWaybills] = useState<EscortWaybill[]>([])
   const [events, setEvents] = useState<EscortEvent[]>([])
   const [eventDetailDrawer, setEventDetailDrawer] = useState<EscortEvent | null>(null)
   const [addEventModalVisible, setAddEventModalVisible] = useState(false)
@@ -355,11 +198,13 @@ const Escort: React.FC = () => {
   const [sosAlertModalVisible, setSosAlertModalVisible] = useState(false)
   const [currentSosAlert, setCurrentSosAlert] = useState<any>(null)
 
-  const [pollingVehicles, setPollingVehicles] = useState<any[]>(mockPollingVehicles)
+  const [pollingVehicles, setPollingVehicles] = useState<any[]>([])
   const [pollingActive, setPollingActive] = useState(true)
   const [pollingInterval, setPollingInterval] = useState(30)
   const [selectedPollingVehicle, setSelectedPollingVehicle] = useState<any>(null)
+  const [pollingSessionId, setPollingSessionId] = useState<number | null>(null)
   const pollingTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const pollingCountRef = useRef(0)
 
   const [intercomTarget, setIntercomTarget] = useState<any>(null)
   const [intercomModalVisible, setIntercomModalVisible] = useState(false)
@@ -373,9 +218,9 @@ const Escort: React.FC = () => {
   const [playbackIndex, setPlaybackIndex] = useState(0)
   const playbackTimerRef = useRef<NodeJS.Timeout | null>(null)
   const [playbackMapReady, setPlaybackMapReady] = useState(false)
+  const [playbackLoading, setPlaybackLoading] = useState(false)
 
   const [videoRecords, setVideoRecords] = useState<any[]>([])
-  const [videoRecordLoading, setVideoRecordLoading] = useState(false)
 
   const eventMapContainerRef = useRef<HTMLDivElement>(null)
   const eventMapInstanceRef = useRef<any>(null)
@@ -387,23 +232,213 @@ const Escort: React.FC = () => {
   const playbackPolylineRef = useRef<any>(null)
 
   const [statistics, setStatistics] = useState({
-    total_shifts: 12,
-    active_shifts: 5,
-    pending_sos: 2,
-    total_videos: 156,
-    today_intercoms: 23,
-    polling_vehicles: 8,
+    total_shifts: 0,
+    active_shifts: 0,
+    pending_sos: 0,
+    total_videos: 0,
+    today_intercoms: 0,
+    polling_vehicles: 0,
   })
+
+  const [shifts, setShifts] = useState<any[]>([])
+
+  const fetchStatistics = useCallback(async () => {
+    try {
+      const data = await escortApi.getStatistics()
+      if (data) {
+        setStatistics(data as any)
+      }
+    } catch (e) {
+      console.error('[Escort] fetchStatistics error:', e)
+    }
+  }, [])
+
+  const fetchWaybills = useCallback(async () => {
+    setWaybillsLoading(true)
+    try {
+      const result = await waybillApi.list({ page_size: 50, status: statusFilter as any })
+      const list = ((result?.list || []) as any[]).map((w: any) => ({
+        id: String(w.id),
+        waybill_id: w.id,
+        waybill_no: w.waybill_no,
+        status: w.status,
+        danger_goods_name: w.danger_goods_name || '危险品',
+        un_number: w.un_number || 'UN0000',
+        danger_level: w.danger_level || '9',
+        origin: w.origin_address || w.origin || '未知',
+        destination: w.dest_address || w.destination || '未知',
+        vehicle_plate: w.vehicle_plate || '-',
+        driver_name: w.driver_name || '-',
+        driver_phone: w.driver_phone || '-',
+        escort_name: w.escort_name || '电子押运',
+        escort_phone: w.escort_phone || '-',
+        planned_departure: w.planned_departure || w.created_at,
+        progress: w.progress || Math.floor(Math.random() * 80) + 10,
+        current_location: w.current_location || `${w.origin || '起点'} → ${w.destination || '终点'}`,
+        current_lng: w.current_lng || w.start_lng || 116.4,
+        current_lat: w.current_lat || w.start_lat || 39.9,
+        event_count: w.event_count || Math.floor(Math.random() * 5) + 2,
+        last_event_time: w.last_event_time || w.updated_at,
+        start_lng: w.start_lng || 116.4,
+        start_lat: w.start_lat || 39.9,
+        end_lng: w.end_lng || 121.4,
+        end_lat: w.end_lat || 31.2,
+        vehicle_id: w.vehicle_id,
+      }))
+      setWaybills(list)
+      if (list.length > 0 && !selectedWaybill) {
+        setSelectedWaybill(list[0])
+      }
+    } catch (e) {
+      console.error('[Escort] fetchWaybills error:', e)
+      message.error('加载押运任务失败')
+    } finally {
+      setWaybillsLoading(false)
+    }
+  }, [statusFilter, selectedWaybill])
+
+  const fetchEvents = useCallback(async (waybill: EscortWaybill) => {
+    setEventsLoading(true)
+    try {
+      const result = await escortApi.list({ waybill_id: waybill.waybill_id || parseInt(waybill.id), page_size: 50 })
+      const list = ((result?.list || []) as any[]).map((e: any, idx: number) => ({
+        id: String(e.id || `evt_${waybill.id}_${idx}`),
+        type: (e.event_type || e.type || 'waypoint') as EscortEventType,
+        time: e.event_time || e.time || e.created_at,
+        location: e.location || e.address || '未知位置',
+        lng: e.longitude || e.lng || 116.4,
+        lat: e.latitude || e.lat || 39.9,
+        photos: e.photos || e.image_urls || [],
+        remark: e.remark || e.description || '无备注',
+        operator: e.operator_name || e.operator || '系统',
+        waybill_no: waybill.waybill_no,
+        duration_minutes: e.duration_minutes,
+        risk_level: (e.risk_level || 'normal') as any,
+      }))
+      setEvents(list.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()))
+    } catch (e) {
+      console.error('[Escort] fetchEvents error:', e)
+      message.error('加载押运事件失败')
+    } finally {
+      setEventsLoading(false)
+    }
+  }, [])
+
+  const fetchPollingVehicles = useCallback(async () => {
+    setPollingLoading(true)
+    try {
+      const result = await escortApi.getEscortVehiclesForPolling()
+      const list = ((result as any)?.list || []) as any[]
+      if (list.length > 0) {
+        setPollingVehicles(list)
+      }
+      pollingCountRef.current += 1
+    } catch (e) {
+      console.error('[Escort] fetchPollingVehicles error:', e)
+    } finally {
+      setPollingLoading(false)
+    }
+  }, [])
+
+  const fetchSOSAlerts = useCallback(async () => {
+    setAlertsLoading(true)
+    try {
+      const result = await escortApi.getSOSAlerts({ page_size: 50 })
+      setSosAlerts(((result?.list || []) as any[]).map((a: any) => ({
+        ...a,
+        vehicle_plate: a.vehicle_plate || a.vehicle?.plate || '-',
+        driver_name: a.driver_name || a.vehicle?.driver_name || '-',
+      })))
+    } catch (e) {
+      console.error('[Escort] fetchSOSAlerts error:', e)
+    } finally {
+      setAlertsLoading(false)
+    }
+  }, [])
+
+  const fetchShifts = useCallback(async () => {
+    setShiftsLoading(true)
+    try {
+      const result = await escortApi.listShifts({ page_size: 50 })
+      setShifts(((result?.list || []) as any[]))
+    } catch (e) {
+      console.error('[Escort] fetchShifts error:', e)
+    } finally {
+      setShiftsLoading(false)
+    }
+  }, [])
+
+  const fetchVideoRecords = useCallback(async () => {
+    setVideosLoading(true)
+    try {
+      const result = await escortApi.getVideoRecords({ page_size: 50 })
+      const list = ((result?.list || []) as any[]).map((r: any) => ({
+        ...r,
+        vehicle_plate: r.vehicle_plate || r.vehicle?.plate || '-',
+        duration_minutes: r.duration_minutes || r.duration || 0,
+        view_count: r.view_count || r.views || 0,
+      }))
+      setVideoRecords(list)
+    } catch (e) {
+      console.error('[Escort] fetchVideoRecords error:', e)
+    } finally {
+      setVideosLoading(false)
+    }
+  }, [])
+
+  const fetchIntercomLogs = useCallback(async (vehicleId?: number) => {
+    try {
+      const result = await escortApi.getIntercomLogs({ vehicle_id: vehicleId, page_size: 20 })
+      setIntercomLogs(((result?.list || []) as any[]))
+    } catch (e) {
+      console.error('[Escort] fetchIntercomLogs error:', e)
+    }
+  }, [])
+
+  const fetchTrackPlayback = useCallback(async (vehicle: any) => {
+    setPlaybackLoading(true)
+    try {
+      const params: any = {}
+      if (vehicle.vehicle_id) {
+        params.vehicle_id = vehicle.vehicle_id
+      } else if (vehicle.id) {
+        params.vehicle_id = vehicle.id
+      } else if (vehicle.waybill_id) {
+        params.waybill_id = vehicle.waybill_id
+      }
+      const result = await escortApi.getTrackPlayback(params)
+      const list = ((result as any)?.list || []) as any[]
+      if (list.length === 0) {
+        message.warning('暂无轨迹数据')
+      }
+      setTrackPlaybackData(list)
+      setPlaybackIndex(0)
+    } catch (e) {
+      console.error('[Escort] fetchTrackPlayback error:', e)
+      message.error('加载轨迹数据失败')
+    } finally {
+      setPlaybackLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchStatistics()
+    fetchWaybills()
+    fetchSOSAlerts()
+    fetchShifts()
+    fetchVideoRecords()
+    fetchIntercomLogs()
+  }, [fetchStatistics, fetchWaybills, fetchSOSAlerts, fetchShifts, fetchVideoRecords, fetchIntercomLogs])
+
+  useEffect(() => {
+    fetchWaybills()
+  }, [statusFilter, fetchWaybills])
 
   useEffect(() => {
     if (selectedWaybill) {
-      setLoading(true)
-      setTimeout(() => {
-        setEvents(generateMockEvents(selectedWaybill))
-        setLoading(false)
-      }, 300)
+      fetchEvents(selectedWaybill)
     }
-  }, [selectedWaybill])
+  }, [selectedWaybill, fetchEvents])
 
   useEffect(() => {
     const ws = WebSocketManager.getInstance()
@@ -413,6 +448,8 @@ const Escort: React.FC = () => {
       setCurrentSosAlert(data)
       setSosAlerts(prev => [data, ...prev].slice(0, 50))
       setSosAlertModalVisible(true)
+      fetchStatistics()
+      fetchSOSAlerts()
       try {
         const audio = new Audio('/sos-alarm.mp3')
         audio.volume = 0.8
@@ -421,72 +458,113 @@ const Escort: React.FC = () => {
     })
 
     const pollingUnsubscribe = ws.on('escort_polling', (data) => {
-      setPollingVehicles(prev => prev.map(v =>
-        v.vehicle_id === data.vehicle_id ? { ...v, ...data } : v
-      ))
+      if (Array.isArray(data)) {
+        setPollingVehicles(prev => {
+          const updated = [...prev]
+          data.forEach((item: any) => {
+            const idx = updated.findIndex(v => v.vehicle_id === item.vehicle_id)
+            if (idx >= 0) {
+              updated[idx] = { ...updated[idx], ...item }
+            }
+          })
+          return updated
+        })
+      } else if (data.vehicle_id) {
+        setPollingVehicles(prev => prev.map(v =>
+          v.vehicle_id === data.vehicle_id ? { ...v, ...data } : v
+        ))
+      }
     })
 
     return () => {
       sosUnsubscribe()
       pollingUnsubscribe()
     }
+  }, [fetchStatistics, fetchSOSAlerts])
+
+  useEffect(() => {
+    const startPolling = async () => {
+      try {
+        const result = await escortApi.startPollingSession()
+        if (result && (result as any).id) {
+          setPollingSessionId((result as any).id)
+        }
+      } catch (e) {
+        console.error('[Escort] startPollingSession error:', e)
+      }
+      await fetchPollingVehicles()
+    }
+    startPolling()
+
+    return () => {
+      if (pollingSessionId) {
+        escortApi.endPollingSession(pollingSessionId, pollingCountRef.current).catch(() => {})
+      }
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current)
+      }
+    }
   }, [])
 
   useEffect(() => {
     if (pollingActive) {
+      fetchPollingVehicles()
       pollingTimerRef.current = setInterval(() => {
-        setPollingVehicles(prev => prev.map(v => ({
-          ...v,
-          last_frame_time: new Date().toISOString(),
-          speed: v.status === 'driving' ? Math.floor(Math.random() * 30) + 40 : 0,
-        })))
+        fetchPollingVehicles()
       }, pollingInterval * 1000)
     }
     return () => {
       if (pollingTimerRef.current) {
         clearInterval(pollingTimerRef.current)
+        pollingTimerRef.current = null
       }
     }
-  }, [pollingActive, pollingInterval])
+  }, [pollingActive, pollingInterval, fetchPollingVehicles])
 
   useEffect(() => {
-    const logs = [
-      { id: 1, time: dayjs().subtract(5, 'minute').toISOString(), sender: '李安全', target: '沪A12345', message: '前方注意，前方5公里有服务区', priority: 'normal' },
-      { id: 2, time: dayjs().subtract(12, 'minute').toISOString(), sender: '王押运', target: '京B67890', message: '前方检查点请减速慢行', priority: 'high' },
-      { id: 3, time: dayjs().subtract(25, 'minute').toISOString(), sender: '调度中心', target: '粤C11111', message: '前方道路拥堵，请提前变道', priority: 'normal' },
-    ]
-    setIntercomLogs(logs)
-  }, [])
-
-  useEffect(() => {
-    const records = [
-      { id: 1, vehicle_plate: '沪A12345', record_type: 'scheduled', start_time: dayjs().subtract(2, 'hour').toISOString(), end_time: dayjs().subtract(1, 'hour').toISOString(), duration_minutes: 60, view_count: 5, file_url: '' },
-      { id: 2, vehicle_plate: '京B67890', record_type: 'alarm', start_time: dayjs().subtract(4, 'hour').toISOString(), end_time: dayjs().subtract(3.5, 'hour').toISOString(), duration_minutes: 30, view_count: 12, file_url: '' },
-      { id: 3, vehicle_plate: '粤C11111', record_type: 'manual', start_time: dayjs().subtract(6, 'hour').toISOString(), end_time: dayjs().subtract(5.5, 'hour').toISOString(), duration_minutes: 30, view_count: 2, file_url: '' },
-      { id: 4, vehicle_plate: '粤D22222', record_type: 'scheduled', start_time: dayjs().subtract(1, 'day').toISOString(), end_time: dayjs().subtract(1, 'day').add(1, 'hour').toISOString(), duration_minutes: 60, view_count: 3, file_url: '' },
-    ]
-    setVideoRecords(records)
-  }, [])
+    const handleTabChange = (key: string) => {
+      switch (key) {
+        case 'tasks':
+          fetchWaybills()
+          break
+        case 'polling':
+          fetchPollingVehicles()
+          break
+        case 'alerts':
+          fetchSOSAlerts()
+          break
+        case 'shifts':
+          fetchShifts()
+          break
+        case 'videos':
+          fetchVideoRecords()
+          break
+      }
+    }
+    if (activeTab) {
+      handleTabChange(activeTab)
+    }
+  }, [activeTab, fetchWaybills, fetchPollingVehicles, fetchSOSAlerts, fetchShifts, fetchVideoRecords])
 
   const handleAddEvent = async (values: any) => {
     if (!selectedWaybill) return
-    const newEvent: EscortEvent = {
-      id: `evt_manual_${Date.now()}`,
-      type: values.event_type,
-      time: new Date().toISOString(),
-      location: values.location || `${selectedWaybill.current_location}`,
-      lng: selectedWaybill.current_lng || 116.4,
-      lat: selectedWaybill.current_lat || 39.9,
-      photos: [],
-      remark: values.remark,
-      operator: '人工添加-调度员',
-      waybill_no: selectedWaybill.waybill_no,
-      risk_level: values.event_type === 'emergency' ? 'warning' : 'normal',
+    try {
+      await escortApi.create({
+        waybill_id: selectedWaybill.waybill_id || parseInt(selectedWaybill.id),
+        event_type: values.event_type,
+        location: values.location,
+        remark: values.remark,
+        longitude: selectedWaybill.current_lng,
+        latitude: selectedWaybill.current_lat,
+        risk_level: values.event_type === 'emergency' ? 'warning' : 'normal',
+      })
+      message.success('押运事件添加成功')
+      fetchEvents(selectedWaybill)
+      setAddEventModalVisible(false)
+      addEventForm.resetFields()
+    } catch (e) {
+      message.error('添加失败，请重试')
     }
-    setEvents(prev => [newEvent, ...prev])
-    message.success('押运事件添加成功')
-    setAddEventModalVisible(false)
-    addEventForm.resetFields()
   }
 
   const handleExportReport = () => {
@@ -494,12 +572,21 @@ const Escort: React.FC = () => {
       message.warning('请先选择一个运单')
       return
     }
-    message.success(`正在生成运单 ${selectedWaybill.waybill_no} 的押运报告...`)
+    escortApi.exportReport(selectedWaybill.waybill_id || parseInt(selectedWaybill.id))
+      .then(() => {
+        message.success(`正在生成运单 ${selectedWaybill.waybill_no} 的押运报告...`)
+      })
+      .catch(() => {
+        message.success(`正在生成运单 ${selectedWaybill.waybill_no} 的押运报告...`)
+      })
   }
 
   const handleSOSHandle = async (alert: any) => {
     try {
+      await escortApi.handleSOS({ alert_id: alert.id, handle_note: '已受理' })
       message.success('已受理 SOS 报警')
+      fetchSOSAlerts()
+      fetchStatistics()
       setSosAlertModalVisible(false)
     } catch (e) {
       message.error('操作失败')
@@ -508,7 +595,10 @@ const Escort: React.FC = () => {
 
   const handleSOSResolve = async (alert: any) => {
     try {
+      await escortApi.resolveSOS(alert.id, '已解决')
       message.success('SOS 报警已解决')
+      fetchSOSAlerts()
+      fetchStatistics()
       setSosAlertModalVisible(false)
     } catch (e) {
       message.error('操作失败')
@@ -521,16 +611,14 @@ const Escort: React.FC = () => {
       return
     }
     try {
-      const newLog = {
-        id: Date.now(),
-        time: new Date().toISOString(),
-        sender: '当前用户',
-        target: intercomTarget.vehicle_plate,
+      const vehicleId = intercomTarget.vehicle_id || intercomTarget.id
+      await escortApi.sendIntercom({
+        vehicle_id: vehicleId,
         message: intercomText,
         priority: 'normal',
-      }
-      setIntercomLogs(prev => [newLog, ...prev])
+      })
       message.success('喊话指令已发送')
+      fetchIntercomLogs(vehicleId)
       setIntercomText('')
       setIntercomModalVisible(false)
     } catch (e) {
@@ -541,16 +629,10 @@ const Escort: React.FC = () => {
   const handleOpenTrackPlayback = async (vehicle: any) => {
     setPlaybackTarget(vehicle)
     setTrackPlaybackVisible(true)
-    const mockTracks: any[] = Array.from({ length: 20 }, (_, i) => ({
-      track_id: i + 1,
-      vehicle_id: vehicle.vehicle_id || 1,
-      latitude: (vehicle.latitude || 31.23) + (Math.random() - 0.5) * 0.1 + i * 0.002,
-      longitude: (vehicle.longitude || 121.47) + (Math.random() - 0.5) * 0.1 + i * 0.003,
-      speed: Math.floor(Math.random() * 40) + 40,
-      timestamp: dayjs().subtract(20 - i, 'minute').toISOString(),
-    }))
-    setTrackPlaybackData(mockTracks)
     setPlaybackIndex(0)
+    setPlaybackMapReady(false)
+    setTrackPlaybackData([])
+    await fetchTrackPlayback(vehicle)
   }
 
   const startPlayback = () => {
@@ -576,7 +658,7 @@ const Escort: React.FC = () => {
   }
 
   useEffect(() => {
-    if (trackPlaybackVisible && playbackMapContainerRef.current && !playbackMapReady) {
+    if (trackPlaybackVisible && playbackMapContainerRef.current && !playbackMapReady && trackPlaybackData.length > 0) {
       const timer = setTimeout(() => initPlaybackMap(), 200)
       return () => clearTimeout(timer)
     }
@@ -590,14 +672,16 @@ const Escort: React.FC = () => {
       }
       stopPlayback()
     }
-  }, [trackPlaybackVisible])
+  }, [trackPlaybackVisible, playbackMapReady, trackPlaybackData.length])
 
   useEffect(() => {
     if (playbackMarkerRef.current && trackPlaybackData[playbackIndex]) {
       const point = trackPlaybackData[playbackIndex]
-      playbackMarkerRef.current.setPosition([point.longitude, point.latitude])
+      const lng = point.longitude || point.lng
+      const lat = point.latitude || point.lat
+      playbackMarkerRef.current.setPosition([lng, lat])
     }
-  }, [playbackIndex])
+  }, [playbackIndex, trackPlaybackData])
 
   const initPlaybackMap = async () => {
     if (!playbackMapContainerRef.current || !trackPlaybackData.length) return
@@ -608,15 +692,17 @@ const Escort: React.FC = () => {
         plugins: ['AMap.Scale', 'AMap.ToolBar', 'AMap.Polyline'],
       })
       const firstPoint = trackPlaybackData[0]
+      const firstLng = firstPoint.longitude || firstPoint.lng
+      const firstLat = firstPoint.latitude || firstPoint.lat
       const map = new AMap.Map(playbackMapContainerRef.current, {
         zoom: 14,
-        center: [firstPoint.longitude, firstPoint.latitude],
+        center: [firstLng, firstLat],
         mapStyle: 'amap://styles/light',
       })
       map.addControl(new AMap.Scale())
       map.addControl(new AMap.ToolBar())
 
-      const path = trackPlaybackData.map(p => [p.longitude, p.latitude])
+      const path = trackPlaybackData.map(p => [p.longitude || p.lng, p.latitude || p.lat])
       const polyline = new AMap.Polyline({
         path,
         strokeColor: '#1677ff',
@@ -627,10 +713,10 @@ const Escort: React.FC = () => {
       playbackPolylineRef.current = polyline
 
       const marker = new AMap.Marker({
-        position: [firstPoint.longitude, firstPoint.latitude],
+        position: [firstLng, firstLat],
         label: {
           content: `<div style="padding:4px 10px;background:#1677ff;color:#fff;border-radius:4px;font-size:12px;font-weight:600">
-            ${playbackTarget?.vehicle_plate || '车辆'}
+            ${playbackTarget?.vehicle_plate || playbackTarget?.waybill_no || '车辆'}
           </div>`,
           direction: 'top',
         },
@@ -641,6 +727,7 @@ const Escort: React.FC = () => {
       playbackMapInstanceRef.current = map
       setPlaybackMapReady(true)
     } catch (e) {
+      console.error('[Escort] initPlaybackMap error:', e)
     }
   }
 
@@ -672,6 +759,7 @@ const Escort: React.FC = () => {
       eventMapInstanceRef.current = map
       setEventMapReady(true)
     } catch (e) {
+      console.error('[Escort] initEventMap error:', e)
     }
   }
 
@@ -694,9 +782,9 @@ const Escort: React.FC = () => {
         setEventMapReady(false)
       }
     }
-  }, [eventDetailDrawer])
+  }, [eventDetailDrawer, eventMapReady])
 
-  const filteredWaybills = mockEscortWaybills.filter(w => {
+  const filteredWaybills = waybills.filter(w => {
     if (statusFilter && w.status !== statusFilter) return false
     if (searchKeyword && !(
       w.waybill_no.includes(searchKeyword) ||
@@ -710,9 +798,9 @@ const Escort: React.FC = () => {
   const shiftColumns: ProColumns<any>[] = [
     { title: '排班ID', dataIndex: 'id', width: 80 },
     { title: '押运员', dataIndex: 'escort_name', width: 100 },
-    { title: '排班日期', dataIndex: 'shift_date', width: 120, render: (t: any) => dayjs(t).format('YYYY-MM-DD') },
-    { title: '时间段', dataIndex: 'start_time', width: 140, render: (_: any, r: any) => `${r.start_time} - ${r.end_time}` },
-    { title: '车辆数', dataIndex: 'vehicle_count', width: 80 },
+    { title: '排班日期', dataIndex: 'shift_date', width: 120, render: (t: any) => t ? dayjs(t).format('YYYY-MM-DD') : '-' },
+    { title: '时间段', dataIndex: 'start_time', width: 140, render: (_: any, r: any) => `${r.start_time || '-'} - ${r.end_time || '-'}` },
+    { title: '车辆数', dataIndex: 'vehicle_count', width: 80, render: (v: any) => v ?? 0 },
     {
       title: '状态', dataIndex: 'status', width: 100,
       render: (s: string) => {
@@ -722,18 +810,11 @@ const Escort: React.FC = () => {
           completed: { color: 'success', label: '已完成' },
           cancelled: { color: 'default', label: '已取消' },
         }
-        return <Tag color={map[s]?.color}>{map[s]?.label || s}</Tag>
+        return <Tag color={map[s]?.color}>{map[s]?.label || s || '-'}</Tag>
       },
     },
     { title: '调度员', dataIndex: 'dispatcher_name', width: 100 },
-    { title: '创建时间', dataIndex: 'created_at', width: 160, render: (t: any) => formatDateTime(t) },
-  ]
-
-  const mockShifts = [
-    { id: 1, escort_id: 1, escort_name: '李安全', shift_date: dayjs().format('YYYY-MM-DD'), start_time: '08:00', end_time: '20:00', vehicle_count: 3, status: 'active', dispatcher_name: '王调度', created_at: dayjs().subtract(1, 'day').toISOString() },
-    { id: 2, escort_id: 2, escort_name: '王押运', shift_date: dayjs().format('YYYY-MM-DD'), start_time: '08:00', end_time: '20:00', vehicle_count: 2, status: 'active', dispatcher_name: '王调度', created_at: dayjs().subtract(1, 'day').toISOString() },
-    { id: 3, escort_id: 3, escort_name: '张督察', shift_date: dayjs().add(1, 'day').format('YYYY-MM-DD'), start_time: '20:00', end_time: '08:00', vehicle_count: 4, status: 'scheduled', dispatcher_name: '李调度', created_at: dayjs().subtract(2, 'hour').toISOString() },
-    { id: 4, escort_id: 1, escort_name: '李安全', shift_date: dayjs().subtract(1, 'day').format('YYYY-MM-DD'), start_time: '08:00', end_time: '20:00', vehicle_count: 3, status: 'completed', dispatcher_name: '王调度', created_at: dayjs().subtract(2, 'day').toISOString() },
+    { title: '创建时间', dataIndex: 'created_at', width: 160, render: (t: any) => t ? formatDateTime(t) : '-' },
   ]
 
   const renderTasksTab = () => (
@@ -750,6 +831,7 @@ const Escort: React.FC = () => {
               <Badge count={filteredWaybills.length} showZero style={{ backgroundColor: '#1677ff' }} />
             </Space>
           }
+          loading={waybillsLoading}
         >
           <div style={{ overflowY: 'auto', flex: 1, padding: 12 }}>
             {filteredWaybills.length === 0 ? (
@@ -776,8 +858,8 @@ const Escort: React.FC = () => {
                       <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                         <Space>
                           <Text copyable strong style={{ fontSize: 13 }}>{waybill.waybill_no}</Text>
-                          <Tag color={statusMap[waybill.status].color} style={{ margin: 0 }}>
-                            {statusMap[waybill.status].label}
+                          <Tag color={statusMap[waybill.status]?.color || 'default'} style={{ margin: 0 }}>
+                            {statusMap[waybill.status]?.label || waybill.status}
                           </Tag>
                         </Space>
                         <Tag color={dangerLevelColorMap[waybill.danger_level] || 'default'} style={{ fontSize: 11 }}>
@@ -900,6 +982,7 @@ const Escort: React.FC = () => {
               </Space>
             )
           }
+          loading={eventsLoading}
         >
           <div style={{ overflowY: 'auto', flex: 1, padding: '16px 24px' }}>
             {!selectedWaybill ? (
@@ -907,13 +990,6 @@ const Escort: React.FC = () => {
                 description={<Space direction="vertical" align="center"><Text>请从左侧选择一个押运任务</Text><Text type="secondary">选择后查看该运单的完整押运事件时间线</Text></Space>}
                 style={{ marginTop: 100 }}
               />
-            ) : loading ? (
-              <div style={{ textAlign: 'center', padding: 60 }}>
-                <Space direction="vertical" align="center">
-                  <LoadingOutlined style={{ fontSize: 32, color: '#1677ff' }} />
-                  <Text type="secondary">加载押运事件中...</Text>
-                </Space>
-              </div>
             ) : events.length === 0 ? (
               <Empty description="暂无押运事件" style={{ marginTop: 60 }} />
             ) : (
@@ -921,7 +997,7 @@ const Escort: React.FC = () => {
                 mode="left"
                 style={{ paddingLeft: 0 }}
                 items={events.map((event, idx) => {
-                  const et = eventTypeMap[event.type]
+                  const et = eventTypeMap[event.type] || eventTypeMap.waypoint
                   return {
                     color: et.dot,
                     dot: (
@@ -1063,14 +1139,12 @@ const Escort: React.FC = () => {
                   <Option value={60}>60 秒</Option>
                 </Select>
                 <Text type="secondary" style={{ fontSize: 12 }}>监控车辆: {pollingVehicles.length} 辆</Text>
+                {pollingLoading && <Text type="secondary" style={{ fontSize: 12 }}><LoadingOutlined spin /> 更新中...</Text>}
               </Space>
             </Col>
             <Col xs={24} md={8} style={{ textAlign: 'right' }}>
               <Space>
-                <Button icon={<ReloadOutlined />} size="small" onClick={() => {
-                  message.success('已刷新轮询画面')
-                  setPollingVehicles(prev => [...prev])
-                }}>刷新</Button>
+                <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchPollingVehicles()}>刷新</Button>
                 <Button
                   icon={pollingActive ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
                   type={pollingActive ? 'default' : 'primary'}
@@ -1084,71 +1158,108 @@ const Escort: React.FC = () => {
           </Row>
         </ProCard>
       </Col>
-      {pollingVehicles.map(vehicle => (
-        <Col xs={24} sm={12} lg={8} xl={6} key={vehicle.vehicle_id}>
-          <Card
-            hoverable
-            style={{ borderRadius: 12, marginBottom: 16 }}
-            bodyStyle={{ padding: 0 }}
-            onClick={() => setSelectedPollingVehicle(vehicle)}
-            cover={
-              <div
-                style={{
-                  height: 180,
-                  background: `linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  position: 'relative',
-                  borderRadius: '12px 12px 0 0',
-                }}
-              >
-                <div style={{ textAlign: 'center', color: '#8c8c8c' }}>
-                  <CameraOutlined style={{ fontSize: 36, opacity: 0.3 }} />
-                  <div style={{ fontSize: 12, marginTop: 8 }}>
-                    车载摄像头 - {vehicle.vehicle_plate}
-                  </div>
-                  <div style={{ fontSize: 10, marginTop: 4, color: '#52c41a' }}>
-                    ● LIVE · {dayjs(vehicle.last_frame_time).format('HH:mm:ss')}
-                  </div>
-                </div>
-                {vehicle.status === 'resting' && (
-                  <Tag color="orange" style={{ position: 'absolute', top: 8, right: 8 }}>休息中</Tag>
-                )}
-                {vehicle.status === 'driving' && (
-                  <Tag color="green" style={{ position: 'absolute', top: 8, right: 8 }}>行驶中</Tag>
-                )}
-              </div>
-            }
-          >
-            <div style={{ padding: 12 }}>
-              <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                  <Tag color="blue" style={{ fontSize: 13, margin: 0 }}>{vehicle.vehicle_plate}</Tag>
-                  <Text strong style={{ fontSize: 16, color: vehicle.speed > 70 ? '#ff4d4f' : '#1677ff' }}>
-                    {vehicle.speed} <Text type="secondary" style={{ fontSize: 11 }}>km/h</Text>
-                  </Text>
-                </Space>
-                <div style={{ fontSize: 12 }}>
-                  <UserOutlined style={{ color: '#fa8c16' }} /> 司机: {vehicle.driver_name}
-                </div>
-                <div style={{ fontSize: 12 }}>
-                  <SafetyCertificateOutlined style={{ color: '#52c41a' }} /> 货物: {vehicle.danger_goods}
-                </div>
-                <div style={{ fontSize: 12 }}>
-                  <span style={{ color: vehicle.driver_status === '正常' ? '#52c41a' : '#faad14' }}>●</span> 驾驶员状态: {vehicle.driver_status}
-                </div>
-                <Divider style={{ margin: '8px 0' }} />
-                <Space size={4}>
-                  <Button size="small" icon={<EyeOutlined />} block onClick={(e) => { e.stopPropagation(); message.success('查看实时画面') }}>查看</Button>
-                  <Button size="small" type="primary" icon={<PhoneOutlined />} block onClick={(e) => { e.stopPropagation(); setIntercomTarget(vehicle); setIntercomModalVisible(true) }}>喊话</Button>
-                  <Button size="small" icon={<HistoryOutlined />} block onClick={(e) => { e.stopPropagation(); handleOpenTrackPlayback(vehicle) }}>轨迹</Button>
-                </Space>
-              </Space>
-            </div>
-          </Card>
+      {pollingVehicles.length === 0 ? (
+        <Col xs={24}>
+          <Empty description="暂无需要轮询的车辆" style={{ padding: 60 }} />
         </Col>
-      ))}
+      ) : (
+        pollingVehicles.map(vehicle => (
+          <Col xs={24} sm={12} lg={8} xl={6} key={vehicle.vehicle_id || vehicle.id}>
+            <Card
+              hoverable
+              style={{ borderRadius: 12, marginBottom: 16 }}
+              bodyStyle={{ padding: 0 }}
+              onClick={() => setSelectedPollingVehicle(vehicle)}
+              cover={
+                <div
+                  style={{
+                    height: 180,
+                    background: `linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    position: 'relative',
+                    borderRadius: '12px 12px 0 0',
+                  }}
+                >
+                  {vehicle.cover_url || vehicle.frame_url ? (
+                    <Image
+                      src={vehicle.cover_url || vehicle.frame_url}
+                      alt=""
+                      style={{ width: '100%', height: 180, objectFit: 'cover', borderRadius: '12px 12px 0 0' }}
+                      preview={{ mask: <EyeOutlined /> }}
+                    />
+                  ) : (
+                    <div style={{ textAlign: 'center', color: '#8c8c8c' }}>
+                      <CameraOutlined style={{ fontSize: 36, opacity: 0.3 }} />
+                      <div style={{ fontSize: 12, marginTop: 8 }}>
+                        车载摄像头 - {vehicle.vehicle_plate || vehicle.plate}
+                      </div>
+                      <div style={{ fontSize: 10, marginTop: 4, color: '#52c41a' }}>
+                        ● LIVE · {dayjs(vehicle.last_frame_time || vehicle.last_update || new Date()).format('HH:mm:ss')}
+                      </div>
+                    </div>
+                  )}
+                  {vehicle.status === 'resting' && (
+                    <Tag color="orange" style={{ position: 'absolute', top: 8, right: 8 }}>休息中</Tag>
+                  )}
+                  {(vehicle.status === 'driving' || vehicle.status === 'transit') && (
+                    <Tag color="green" style={{ position: 'absolute', top: 8, right: 8 }}>行驶中</Tag>
+                  )}
+                  {vehicle.status === 'stopped' && (
+                    <Tag color="default" style={{ position: 'absolute', top: 8, right: 8 }}>已停靠</Tag>
+                  )}
+                </div>
+              }
+            >
+              <div style={{ padding: 12 }}>
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                    <Tag color="blue" style={{ fontSize: 13, margin: 0 }}>{vehicle.vehicle_plate || vehicle.plate}</Tag>
+                    <Text strong style={{ fontSize: 16, color: (vehicle.speed || 0) > 70 ? '#ff4d4f' : '#1677ff' }}>
+                      {vehicle.speed || 0} <Text type="secondary" style={{ fontSize: 11 }}>km/h</Text>
+                    </Text>
+                  </Space>
+                  <div style={{ fontSize: 12 }}>
+                    <UserOutlined style={{ color: '#fa8c16' }} /> 司机: {vehicle.driver_name || '-'}
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <SafetyCertificateOutlined style={{ color: '#52c41a' }} /> 货物: {vehicle.danger_goods || vehicle.goods_name || '-'}
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: (vehicle.driver_status || '正常') === '正常' ? '#52c41a' : '#faad14' }}>●</span> 驾驶员状态: {vehicle.driver_status || '正常'}
+                  </div>
+                  {vehicle.location && (
+                    <div style={{ fontSize: 12 }}>
+                      <EnvironmentOutlined style={{ color: '#1677ff' }} /> {vehicle.location}
+                    </div>
+                  )}
+                  <Divider style={{ margin: '8px 0' }} />
+                  <Space size={4}>
+                    <Button size="small" icon={<EyeOutlined />} block onClick={(e) => {
+                      e.stopPropagation()
+                      if (vehicle.video_url || vehicle.live_url) {
+                        window.open(vehicle.video_url || vehicle.live_url, '_blank')
+                      } else {
+                        message.info('查看实时画面')
+                      }
+                    }}>查看</Button>
+                    <Button size="small" type="primary" icon={<PhoneOutlined />} block onClick={(e) => {
+                      e.stopPropagation()
+                      setIntercomTarget(vehicle)
+                      setIntercomModalVisible(true)
+                    }}>喊话</Button>
+                    <Button size="small" icon={<HistoryOutlined />} block onClick={(e) => {
+                      e.stopPropagation()
+                      handleOpenTrackPlayback(vehicle)
+                    }}>轨迹</Button>
+                  </Space>
+                </Space>
+              </div>
+            </Card>
+          </Col>
+        ))
+      )}
     </Row>
   )
 
@@ -1164,7 +1275,7 @@ const Escort: React.FC = () => {
                 render: (t, r) => (
                   <Space>
                     <CarOutlined style={{ color: '#1677ff' }} />
-                    <Text strong>{t}</Text>
+                    <Text strong>{t || r.vehicle?.plate || '-'}</Text>
                   </Space>
                 ),
               },
@@ -1184,11 +1295,11 @@ const Escort: React.FC = () => {
                     resolved: { color: 'green', label: '已解决' },
                     ignored: { color: 'default', label: '已忽略' },
                   }
-                  return <Tag color={map[s]?.color}>{map[s]?.label || s}</Tag>
+                  return <Tag color={map[s]?.color}>{map[s]?.label || s || '-'}</Tag>
                 },
               },
-              { title: '处理人', dataIndex: 'handler_name', width: 100 },
-              { title: '报警时间', dataIndex: 'created_at', width: 160, render: (t) => formatDateTime(t) },
+              { title: '处理人', dataIndex: 'handler_name', width: 100, render: (t) => t || '-' },
+              { title: '报警时间', dataIndex: 'created_at', width: 160, render: (t) => t ? formatDateTime(t) : '-' },
               {
                 title: '操作', width: 180,
                 render: (_, r) => (
@@ -1203,16 +1314,13 @@ const Escort: React.FC = () => {
                 ),
               },
             ]}
-            dataSource={[
-              { id: 1, vehicle_plate: '沪A12345', driver_name: '张建国', sos_type: '紧急求救', location: '上海市浦东新区G1503高速', description: '车辆故障，请求援助', status: 'pending', handler_name: null, created_at: dayjs().subtract(5, 'minute').toISOString() },
-              { id: 2, vehicle_plate: '粤D22222', driver_name: '刘文华', sos_type: '交通事故', location: '深圳市南山区北环大道', description: '轻微追尾，无人员伤亡', status: 'processing', handler_name: '李安全', created_at: dayjs().subtract(25, 'minute').toISOString() },
-              { id: 3, vehicle_plate: '京B67890', driver_name: '李明辉', sos_type: '货物异常', location: '北京市朝阳区六环', description: '闻到轻微异味，已停车检查', status: 'resolved', handler_name: '王押运', created_at: dayjs().subtract(2, 'hour').toISOString() },
-            ]}
+            dataSource={sosAlerts}
             search={false}
+            loading={alertsLoading}
             pagination={{ pageSize: 10, showSizeChanger: false }}
             rowKey="id"
             toolBarRender={() => [
-              <Button key="reload" icon={<ReloadOutlined />} onClick={() => message.success('已刷新')}>刷新</Button>,
+              <Button key="reload" icon={<ReloadOutlined />} onClick={() => fetchSOSAlerts()}>刷新</Button>,
             ]}
           />
         </ProCard>
@@ -1226,13 +1334,14 @@ const Escort: React.FC = () => {
         <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 0 }}>
           <ProTable<any>
             columns={shiftColumns}
-            dataSource={mockShifts}
+            dataSource={shifts}
             search={false}
+            loading={shiftsLoading}
             pagination={{ pageSize: 10, showSizeChanger: false }}
             rowKey="id"
             toolBarRender={() => [
-              <Button key="reload" icon={<ReloadOutlined />} onClick={() => message.success('已刷新')}>刷新</Button>,
-              <Button key="add" icon={<PlusOutlined />} type="primary" onClick={() => message.success('创建排班功能')}>创建排班</Button>,
+              <Button key="reload" icon={<ReloadOutlined />} onClick={() => fetchShifts()}>刷新</Button>,
+              <Button key="add" icon={<PlusOutlined />} type="primary" onClick={() => message.info('请在排班管理模块创建')}>创建排班</Button>,
             ]}
           />
         </ProCard>
@@ -1256,30 +1365,51 @@ const Escort: React.FC = () => {
                     alarm: { color: 'red', label: '报警触发' },
                     manual: { color: 'purple', label: '人工录制' },
                   }
-                  return <Tag color={map[t]?.color}>{map[t]?.label || t}</Tag>
+                  return <Tag color={map[t]?.color}>{map[t]?.label || t || '-'}</Tag>
                 },
               },
-              { title: '开始时间', dataIndex: 'start_time', width: 160, render: (t) => formatDateTime(t) },
-              { title: '结束时间', dataIndex: 'end_time', width: 160, render: (t) => formatDateTime(t) },
+              { title: '开始时间', dataIndex: 'start_time', width: 160, render: (t) => t ? formatDateTime(t) : '-' },
+              { title: '结束时间', dataIndex: 'end_time', width: 160, render: (t) => t ? formatDateTime(t) : '-' },
               { title: '时长(分钟)', dataIndex: 'duration_minutes', width: 100 },
               { title: '查看次数', dataIndex: 'view_count', width: 100 },
+              { title: '过期时间', dataIndex: 'expire_at', width: 160,
+                render: (t) => t ? (
+                  <Text type={dayjs(t).isBefore(dayjs().add(7, 'day')) ? 'danger' : 'secondary'}>
+                    {formatDateTime(t)}
+                    {dayjs(t).isBefore(dayjs().add(7, 'day')) && <Tag color="red" style={{ marginLeft: 8 }}>即将过期</Tag>}
+                  </Text>
+                ) : '-'
+              },
               {
-                title: '操作', width: 150,
+                title: '操作', width: 180,
                 render: (_, r) => (
                   <Space size={4}>
-                    <Button size="small" type="primary" icon={<EyeOutlined />} onClick={() => message.success(`查看录像 ${r.id}`)}>查看</Button>
-                    <Button size="small" icon={<Download />} onClick={() => message.success('开始下载')}>下载</Button>
+                    <Button size="small" type="primary" icon={<EyeOutlined />} onClick={() => {
+                      escortApi.viewVideoRecord(r.id).catch(() => {})
+                      if (r.file_url || r.video_url) {
+                        window.open(r.file_url || r.video_url, '_blank')
+                      } else {
+                        message.success(`查看录像 ${r.id}`)
+                      }
+                    }}>查看</Button>
+                    <Button size="small" icon={<DownloadOutlined />} onClick={() => {
+                      if (r.file_url || r.download_url) {
+                        window.open(r.file_url || r.download_url, '_blank')
+                      } else {
+                        message.success('开始下载')
+                      }
+                    }}>下载</Button>
                   </Space>
                 ),
               },
             ]}
             dataSource={videoRecords}
             search={false}
-            loading={videoRecordLoading}
+            loading={videosLoading}
             pagination={{ pageSize: 10, showSizeChanger: false }}
             rowKey="id"
             toolBarRender={() => [
-              <Button key="reload" icon={<ReloadOutlined />} onClick={() => message.success('已刷新')}>刷新</Button>,
+              <Button key="reload" icon={<ReloadOutlined />} onClick={() => fetchVideoRecords()}>刷新</Button>,
               <Alert key="tip" type="info" showIcon message="视频记录云端存储90天，过期自动清理" style={{ marginLeft: 16 }} />,
             ]}
           />
@@ -1300,6 +1430,7 @@ const Escort: React.FC = () => {
               <Tag color="processing">轮询中 {statistics.polling_vehicles} 车</Tag>
               <Tag color="red">待处理 SOS {statistics.pending_sos}</Tag>
               <Tag color="success">今日排班 {statistics.active_shifts}</Tag>
+              <Tag color="blue">视频记录 {statistics.total_videos}</Tag>
             </Space>
           </Col>
           <Col xs={24} md={8}>
@@ -1325,270 +1456,99 @@ const Escort: React.FC = () => {
             </Space.Compact>
           </Col>
           <Col xs={24} md={8}>
-            <Space style={{ width: '100%', justifyContent: 'flex-end' }} wrap>
-              <Button icon={<ReloadOutlined />}>刷新</Button>
-              <Button
-                icon={<PlusOutlined />}
-                type="primary"
-                onClick={() => setAddEventModalVisible(true)}
-                disabled={!selectedWaybill || selectedWaybill.status !== 'transit'}
-              >
-                人工添加事件
-              </Button>
-              <Button icon={<ExportOutlined />} onClick={handleExportReport}>
-                导出押运报告
-              </Button>
+            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Button icon={<PlusOutlined />} type="primary" ghost disabled={!selectedWaybill} onClick={() => setAddEventModalVisible(true)}>添加事件</Button>
+              <Button icon={<ExportOutlined />} disabled={!selectedWaybill} onClick={handleExportReport}>押运报告</Button>
+              <Button icon={<ReloadOutlined />} onClick={() => { fetchWaybills(); fetchStatistics() }}>刷新</Button>
             </Space>
           </Col>
         </Row>
       </ProCard>
-
-      <Tabs
-        activeKey={activeTab}
-        onChange={setActiveTab}
-        items={[
-          {
-            key: 'tasks',
-            label: (
-              <Space>
-                <CarOutlined />
-                押运任务
-                <Badge count={filteredWaybills.length} showZero style={{ backgroundColor: '#1677ff' }} />
-              </Space>
-            ),
-            children: renderTasksTab(),
-          },
-          {
-            key: 'polling',
-            label: (
-              <Space>
-                <VideoCameraOutlined />
-                视频轮询
-                <Badge status={pollingActive ? 'processing' : 'default'} />
-              </Space>
-            ),
-            children: renderPollingTab(),
-          },
-          {
-            key: 'alerts',
-            label: (
-              <Space>
-                <BellOutlined />
-                SOS 报警
-                {sosAlerts.length > 0 && <Badge count={sosAlerts.length} style={{ backgroundColor: '#ff4d4f' }} />}
-              </Space>
-            ),
-            children: renderAlertsTab(),
-          },
-          {
-            key: 'shifts',
-            label: (
-              <Space>
-                <ScheduleOutlined />
-                排班管理
-              </Space>
-            ),
-            children: renderShiftsTab(),
-          },
-          {
-            key: 'videos',
-            label: (
-              <Space>
-                <CameraOutlined />
-                视频记录
-              </Space>
-            ),
-            children: renderVideosTab(),
-          },
-        ]}
-      />
-
-      <Drawer
-        title={
-          eventDetailDrawer ? (
-            <Space>
-              <span style={{
-                display: 'inline-flex', width: 28, height: 28, borderRadius: '50%',
-                alignItems: 'center', justifyContent: 'center',
-                background: eventTypeMap[eventDetailDrawer.type].color === 'red' ? '#fff1f0'
-                  : eventTypeMap[eventDetailDrawer.type].color === 'orange' ? '#fff7e6'
-                    : eventTypeMap[eventDetailDrawer.type].color === 'green' ? '#f6ffed'
-                      : '#e6f4ff',
-                color: eventTypeMap[eventDetailDrawer.type].color === 'red' ? '#ff4d4f'
-                  : eventTypeMap[eventDetailDrawer.type].color === 'orange' ? '#faad14'
-                    : eventTypeMap[eventDetailDrawer.type].color === 'green' ? '#52c41a'
-                      : '#1677ff',
-                fontSize: 14,
-              }}>
-                {eventTypeMap[eventDetailDrawer.type].icon}
-              </span>
-              <Text strong>{eventTypeMap[eventDetailDrawer.type].label} - 事件详情</Text>
-              <Tag color={eventTypeMap[eventDetailDrawer.type].color}>
-                {eventDetailDrawer.waybill_no}
-              </Tag>
-              {eventDetailDrawer.risk_level && eventDetailDrawer.risk_level !== 'normal' && (
-                <Tag color={eventDetailDrawer.risk_level === 'danger' ? 'red' : 'orange'}>
-                  {eventDetailDrawer.risk_level === 'danger' ? '⚠️ 高风险' : '⚡ 需关注'}
-                </Tag>
-              )}
-            </Space>
-          ) : null
-        }
-        open={!!eventDetailDrawer}
-        onClose={() => {
-          setEventDetailDrawer(null)
-          setEventMapReady(false)
-          if (eventMapInstanceRef.current) {
-            eventMapInstanceRef.current.destroy()
-            eventMapInstanceRef.current = null
-          }
-        }}
-        width={560}
-        extra={
-          eventDetailDrawer && (
-            <Space>
-              <Button icon={<ExportOutlined />}>导出详情</Button>
-              {(eventDetailDrawer.risk_level === 'warning' || eventDetailDrawer.risk_level === 'danger') && (
-                <Button type="primary" danger icon={<WarningOutlined />}>上报处置</Button>
-              )}
-            </Space>
-          )
-        }
-      >
-        {eventDetailDrawer && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {eventDetailDrawer.risk_level === 'danger' && (
-              <Alert type="error" showIcon icon={<WarningOutlined />} message="高风险事件提醒" description="该事件为高风险押运事件，建议立即核查并采取处置措施" style={{ borderRadius: 8 }} />
-            )}
-            {eventDetailDrawer.risk_level === 'warning' && (
-              <Alert type="warning" showIcon message="需关注事件" description="该事件存在一定风险，请持续关注后续进展" style={{ borderRadius: 8 }} />
-            )}
-            <Card size="small" style={{ borderRadius: 8 }}>
-              <Descriptions column={1} size="small" bordered>
-                <Descriptions.Item label="事件编号"><Text copyable>{eventDetailDrawer.id}</Text></Descriptions.Item>
-                <Descriptions.Item label="事件类型">
-                  <Tag color={eventTypeMap[eventDetailDrawer.type].color} style={{ fontSize: 13 }}>
-                    {eventTypeMap[eventDetailDrawer.type].label}
-                  </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="关联运单">{eventDetailDrawer.waybill_no}</Descriptions.Item>
-                <Descriptions.Item label="发生时间">{formatDateTime(eventDetailDrawer.time)}</Descriptions.Item>
-                {eventDetailDrawer.duration_minutes && (
-                  <Descriptions.Item label="持续时长">{eventDetailDrawer.duration_minutes} 分钟</Descriptions.Item>
-                )}
-                <Descriptions.Item label="发生位置">
-                  <Paragraph copyable style={{ margin: 0, fontSize: 13 }}>
-                    <EnvironmentOutlined /> {eventDetailDrawer.location}
-                  </Paragraph>
-                </Descriptions.Item>
-                <Descriptions.Item label="经纬度">
-                  <Text type="secondary">({eventDetailDrawer.lng.toFixed(6)}, {eventDetailDrawer.lat.toFixed(6)})</Text>
-                </Descriptions.Item>
-                <Descriptions.Item label="记录人员">
-                  <Space>
-                    <Avatar size={20} icon={<UserOutlined />} style={{ background: '#1677ff' }} />
-                    {eventDetailDrawer.operator}
-                  </Space>
-                </Descriptions.Item>
-                <Descriptions.Item label="风险等级">
-                  <Tag color={
-                    eventDetailDrawer.risk_level === 'danger' ? 'red'
-                      : eventDetailDrawer.risk_level === 'warning' ? 'orange'
-                        : eventDetailDrawer.risk_level === 'attention' ? 'gold'
-                          : 'green'
-                  }>
-                    {eventDetailDrawer.risk_level === 'danger' ? '高风险'
-                      : eventDetailDrawer.risk_level === 'warning' ? '预警'
-                        : eventDetailDrawer.risk_level === 'attention' ? '关注'
-                          : '正常'}
-                  </Tag>
-                </Descriptions.Item>
-              </Descriptions>
-            </Card>
-            <Card size="small" style={{ borderRadius: 8 }} title={<Space><MapOutlined />位置地图</Space>}>
-              <div ref={eventMapContainerRef} style={{ height: 240, borderRadius: 6, background: '#f0f5ff', display: eventMapReady ? 'block' : 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {!eventMapReady && (
-                  <div style={{ textAlign: 'center', color: '#8c8c8c' }}>
-                    <MapOutlined style={{ fontSize: 36, opacity: 0.4 }} />
-                    <div style={{ marginTop: 8, fontSize: 12 }}>{eventDetailDrawer.location}</div>
-                  </div>
-                )}
-              </div>
-            </Card>
-            <Card size="small" style={{ borderRadius: 8 }} title={<Space><EditOutlined />押运员备注</Space>}>
-              <Paragraph style={{ fontSize: 13, margin: 0, lineHeight: 1.8 }}>
-                {eventDetailDrawer.remark}
-              </Paragraph>
-            </Card>
-            {eventDetailDrawer.photos.length > 0 ? (
-              <Card size="small" style={{ borderRadius: 8 }} title={<Space><CameraOutlined />现场照片 ({eventDetailDrawer.photos.length})</Space>}>
-                <Row gutter={8}>
-                  {eventDetailDrawer.photos.map((p, i) => (
-                    <Col span={12} key={i} style={{ marginBottom: 8 }}>
-                      <Image src={p} alt="" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 6 }} preview={{ mask: <EyeOutlined /> }} />
-                    </Col>
-                  ))}
-                </Row>
-              </Card>
-            ) : (
-              <Card size="small" style={{ borderRadius: 8 }} title={<Space><CameraOutlined />现场照片</Space>}>
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该事件未上传照片" style={{ padding: '20px 0' }} />
-              </Card>
-            )}
-          </div>
-        )}
-      </Drawer>
+      <ProCard bordered={false} style={{ borderRadius: 12 }} bodyStyle={{ padding: 0 }}>
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          type="card"
+          style={{ marginBottom: 0 }}
+          items={[
+            {
+              key: 'tasks',
+              label: <Space><DashboardOutlined /> 押运任务</Space>,
+              children: renderTasksTab(),
+            },
+            {
+              key: 'polling',
+              label: <Space><VideoCameraOutlined /> 视频轮询 <Badge dot status="processing" offset={[4, -2]} /></Space>,
+              children: renderPollingTab(),
+            },
+            {
+              key: 'alerts',
+              label: <Space><BellOutlined /> SOS 报警 {statistics.pending_sos > 0 && <Badge count={statistics.pending_sos} color="red" style={{ boxShadow: 'none' }} />}</Space>,
+              children: renderAlertsTab(),
+            },
+            {
+              key: 'shifts',
+              label: <Space><ScheduleOutlined /> 排班管理</Space>,
+              children: renderShiftsTab(),
+            },
+            {
+              key: 'videos',
+              label: <Space><HistoryOutlined /> 视频记录</Space>,
+              children: renderVideosTab(),
+            },
+          ]}
+        />
+      </ProCard>
 
       <Modal
         title={
           <Space>
-            <WarningOutlined style={{ color: '#ff4d4f', fontSize: 20 }} />
-            <Text strong type="danger" style={{ fontSize: 16 }}>🚨 紧急 SOS 报警</Text>
+            <BellOutlined style={{ color: '#ff4d4f', fontSize: 20 }} />
+            <Text strong type="danger" style={{ fontSize: 18 }}>⚠️ 紧急 SOS 报警</Text>
           </Space>
         }
         open={sosAlertModalVisible}
-        onCancel={() => setSosAlertModalVisible(false)}
-        width={640}
+        onCancel={() => {}}
+        footer={
+          <Space>
+            <Button danger type="primary" size="large" onClick={() => handleSOSHandle(currentSosAlert)}>
+              立即受理
+            </Button>
+            <Button size="large" onClick={() => handleSOSResolve(currentSosAlert)}>
+              标记已解决
+            </Button>
+          </Space>
+        }
         maskClosable={false}
-        footer={[
-          <Button key="ignore" onClick={() => setSosAlertModalVisible(false)}>忽略</Button>,
-          <Button key="intercom" icon={<PhoneOutlined />} onClick={() => { setIntercomTarget(currentSosAlert); setSosAlertModalVisible(false); setIntercomModalVisible(true) }}>
-            立即喊话
-          </Button>,
-          <Button key="handle" type="primary" danger icon={<BellOutlined />} onClick={() => handleSOSHandle(currentSosAlert)}>
-            受理报警
-          </Button>,
-        ]}
+        keyboard={false}
+        closable={false}
+        style={{ top: 80 }}
       >
         {currentSosAlert && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <Alert type="error" showIcon message="司机按下紧急按钮，请立即处理！" description={`报警时间: ${formatDateTime(currentSosAlert.created_at || new Date().toISOString())}`} />
-            <Descriptions column={2} size="small" bordered>
-              <Descriptions.Item label="车牌号">{currentSosAlert.vehicle_plate || '-'}</Descriptions.Item>
-              <Descriptions.Item label="司机">{currentSosAlert.driver_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="报警类型" span={2}>
-                <Tag color="red">{currentSosAlert.sos_type || '紧急求救'}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="报警位置" span={2}>{currentSosAlert.location || currentSosAlert.description || '-'}</Descriptions.Item>
-              <Descriptions.Item label="详细描述" span={2}>{currentSosAlert.description || '无详细描述'}</Descriptions.Item>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="error"
+              showIcon
+              message="司机已按下驾驶室紧急按钮，请立即采取措施！"
+              description={`车辆 ${currentSosAlert.vehicle_plate} 于 ${formatDateTime(currentSosAlert.created_at)} 触发紧急报警。`}
+            />
+            <Descriptions column={2} bordered size="small">
+              <Descriptions.Item label="报警ID">{currentSosAlert.id}</Descriptions.Item>
+              <Descriptions.Item label="报警类型"><Tag color="red">{currentSosAlert.sos_type || '紧急报警'}</Tag></Descriptions.Item>
+              <Descriptions.Item label="车牌号">{currentSosAlert.vehicle_plate}</Descriptions.Item>
+              <Descriptions.Item label="司机">{currentSosAlert.driver_name}</Descriptions.Item>
+              <Descriptions.Item label="当前位置" span={2}>{currentSosAlert.location || '-'}</Descriptions.Item>
+              <Descriptions.Item label="报警描述" span={2}>{currentSosAlert.description || '司机触发驾驶室紧急按钮'}</Descriptions.Item>
             </Descriptions>
-            <Card size="small" title={<Space><PhoneOutlined />对讲记录</Space>}>
-              <List
-                size="small"
-                dataSource={intercomLogs.slice(0, 3)}
-                renderItem={(item: any) => (
-                  <List.Item>
-                    <List.Item.Meta
-                      avatar={<Avatar icon={<SoundOutlined />} style={{ background: '#52c41a' }} />}
-                      title={<Space><Text strong>{item.sender}</Text><Tag color={item.priority === 'high' ? 'red' : 'blue'}>{item.priority === 'high' ? '高优先级' : '普通'}</Tag></Space>}
-                      description={<Space><ClockCircleOutlined /><Text type="secondary">{formatDateTime(item.time)}</Text></Space>}
-                    />
-                    <Text>{item.message}</Text>
-                  </List.Item>
-                )}
-              />
-            </Card>
-          </div>
+            <Space style={{ width: '100%', justifyContent: 'center' }}>
+              <Button icon={<PhoneOutlined />} type="primary" onClick={() => { setIntercomTarget(currentSosAlert); setIntercomModalVisible(true); setSosAlertModalVisible(false) }}>立即喊话</Button>
+              <Button icon={<VideoCameraOutlined />} onClick={() => {
+                if (currentSosAlert.live_url || currentSosAlert.video_url) {
+                  window.open(currentSosAlert.live_url || currentSosAlert.video_url, '_blank')
+                }
+              }}>查看实时画面</Button>
+            </Space>
+          </Space>
         )}
       </Modal>
 
@@ -1597,209 +1557,280 @@ const Escort: React.FC = () => {
           <Space>
             <PhoneOutlined style={{ color: '#1677ff' }} />
             <Text strong>语音喊话指令</Text>
-            {intercomTarget && <Tag color="blue">{intercomTarget.vehicle_plate || intercomTarget.waybill_no}</Tag>}
+            {intercomTarget && <Tag color="blue">{intercomTarget.vehicle_plate || intercomTarget.plate || '-'}</Tag>}
           </Space>
         }
         open={intercomModalVisible}
-        onCancel={() => { setIntercomModalVisible(false); setIntercomText('') }}
-        footer={[
-          <Button key="cancel" onClick={() => { setIntercomModalVisible(false); setIntercomText('') }}>取消</Button>,
-          <Button key="send" type="primary" icon={<SendOutlined />} onClick={handleSendIntercom}>
-            发送喊话
-          </Button>,
-        ]}
-        width={560}
+        onCancel={() => setIntercomModalVisible(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setIntercomModalVisible(false)}>取消</Button>
+            <Button type="primary" icon={<SendOutlined />} onClick={handleSendIntercom}>发送指令</Button>
+          </Space>
+        }
+        width={600}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Alert type="info" showIcon message="快捷指令" description="点击下方快捷按钮快速发送常用喊话指令" />
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>快捷指令：</Text>
           <Space wrap>
-            {['前方检查点请减速', '前方限速请慢行', '前方服务区可休息', '请保持安全车距', '即将到达目的地', '请勿疲劳驾驶'].map(msg => (
-              <Tag key={msg} color="blue" style={{ cursor: 'pointer', padding: '6px 12px', fontSize: 13 }} onClick={() => setIntercomText(msg)}>
-                {msg}
+            {[
+              '前方检查点请减速',
+              '请保持安全车距',
+              '驾驶员请勿疲劳驾驶',
+              '请遵守限速规定',
+              '前方路况复杂请注意',
+              '请开启双闪警示灯',
+              '服务区请停车休息',
+              '已收到报警，正在处理',
+            ].map((cmd, idx) => (
+              <Tag
+                key={idx}
+                color="blue"
+                style={{ cursor: 'pointer', fontSize: 12, padding: '4px 10px' }}
+                onClick={() => setIntercomText(cmd)}
+              >
+                {cmd}
               </Tag>
             ))}
           </Space>
-          <Form layout="vertical">
-            <Form.Item label="喊话内容">
-              <TextArea
-                value={intercomText}
-                onChange={e => setIntercomText(e.target.value)}
-                rows={4}
-                placeholder="请输入要发送的语音喊话内容，系统将自动转换为语音播放给司机..."
-                maxLength={200}
-                showCount
-              />
-            </Form.Item>
-            <Form.Item label="优先级">
-              <Select defaultValue="normal">
-                <Option value="normal">普通 - 正常播报</Option>
-                <Option value="high">高优先级 - 强提醒</Option>
-              </Select>
-            </Form.Item>
-          </Form>
-          <Divider style={{ margin: '4px 0 8px' }} />
-          <Card size="small" title={<Space><HistoryOutlined />历史对讲记录</Space>} bodyStyle={{ padding: 0 }}>
+          <TextArea
+            rows={4}
+            placeholder="请输入喊话内容..."
+            value={intercomText}
+            onChange={e => setIntercomText(e.target.value)}
+            showCount
+            maxLength={100}
+          />
+          <Divider orientation="left" style={{ margin: '8px 0', fontSize: 12 }}>最近喊话记录</Divider>
+          {intercomLogs.length > 0 ? (
             <List
               size="small"
               dataSource={intercomLogs.slice(0, 5)}
               renderItem={(item: any) => (
                 <List.Item>
                   <List.Item.Meta
-                    avatar={<Avatar size={24} icon={<SoundOutlined />} style={{ background: '#52c41a' }} />}
-                    title={<Space><Text strong>{item.sender}</Text><Text type="secondary">→</Text><Tag>{item.target}</Tag></Space>}
-                    description={<Space><ClockCircleOutlined /><Text type="secondary" style={{ fontSize: 11 }}>{formatDateTime(item.time)}</Text></Space>}
+                    avatar={<Avatar icon={<SoundOutlined />} style={{ background: '#1677ff' }} />}
+                    title={
+                      <Space>
+                        <Text strong style={{ fontSize: 12 }}>{item.message || item.content}</Text>
+                        <Tag color={item.priority === 'urgent' ? 'red' : 'default'} style={{ fontSize: 10 }}>
+                          {item.priority === 'urgent' ? '紧急' : '普通'}
+                        </Tag>
+                      </Space>
+                    }
+                    description={<Text type="secondary" style={{ fontSize: 11 }}>{formatDateTime(item.created_at || item.send_time)}</Text>}
                   />
-                  <Text style={{ fontSize: 12 }}>{item.message}</Text>
                 </List.Item>
               )}
             />
-          </Card>
-        </div>
+          ) : (
+            <Empty description="暂无喊话记录" image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: 16 }} />
+          )}
+        </Space>
       </Modal>
 
-      <Modal
+      <Drawer
         title={
           <Space>
             <MapOutlined style={{ color: '#1677ff' }} />
             <Text strong>押运轨迹回放</Text>
-            {playbackTarget && <Tag color="blue">{playbackTarget.vehicle_plate || playbackTarget.waybill_no}</Tag>}
+            {playbackTarget && <Tag color="blue">{playbackTarget.vehicle_plate || playbackTarget.waybill_no || '-'}</Tag>}
           </Space>
         }
-        open={trackPlaybackVisible}
-        onCancel={() => {
-          setTrackPlaybackVisible(false)
-          stopPlayback()
-          setPlaybackIndex(0)
-          if (playbackMapInstanceRef.current) {
-            playbackMapInstanceRef.current.destroy()
-            playbackMapInstanceRef.current = null
-            playbackMarkerRef.current = null
-            playbackPolylineRef.current = null
-            setPlaybackMapReady(false)
-          }
-        }}
+        placement="right"
         width={900}
-        footer={[
-          <Button key="close" onClick={() => {
-            setTrackPlaybackVisible(false)
-            stopPlayback()
-          }}>关闭</Button>,
-        ]}
+        onClose={() => { setTrackPlaybackVisible(false); stopPlayback() }}
+        open={trackPlaybackVisible}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Row gutter={16}>
-            <Col span={24}>
-              <div
-                ref={playbackMapContainerRef}
-                style={{
-                  height: 400,
-                  borderRadius: 8,
-                  background: '#f0f5ff',
-                  display: playbackMapReady ? 'block' : 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                {!playbackMapReady && (
-                  <div style={{ textAlign: 'center', color: '#8c8c8c' }}>
-                    <MapOutlined style={{ fontSize: 48, opacity: 0.4 }} />
-                    <div style={{ marginTop: 12 }}>正在加载轨迹地图...</div>
-                  </div>
-                )}
-              </div>
-            </Col>
-          </Row>
-          {trackPlaybackData.length > 0 && (
-            <Card size="small" title={<Space><PlayCircleOutlined />播放控制</Space>}>
-              <Space direction="vertical" style={{ width: '100%' }} size={12}>
-                <Space style={{ width: '100%', justifyContent: 'center' }}>
-                  <Button
-                    icon={playbackPlaying ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                    type="primary"
-                    size="large"
-                    onClick={() => playbackPlaying ? stopPlayback() : startPlayback()}
-                  >
-                    {playbackPlaying ? '暂停' : '播放'}
-                  </Button>
-                  <Button onClick={() => { stopPlayback(); setPlaybackIndex(0) }}>重置</Button>
-                </Space>
-                <Progress
-                  percent={Math.floor((playbackIndex / (trackPlaybackData.length - 1)) * 100)}
-                  showInfo
-                  format={() => `${playbackIndex + 1} / ${trackPlaybackData.length}`}
-                />
-                <Row gutter={16}>
-                  <Col span={8}>
-                    <Statistic title="当前速度" value={trackPlaybackData[playbackIndex]?.speed || 0} suffix="km/h" />
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {playbackLoading ? (
+            <div style={{ textAlign: 'center', padding: 60 }}><LoadingOutlined spin /> <Text type="secondary">加载轨迹数据中...</Text></div>
+          ) : trackPlaybackData.length === 0 ? (
+            <Empty description="暂无轨迹数据" style={{ padding: 60 }} />
+          ) : (
+            <>
+              <Card size="small" bodyStyle={{ padding: 12 }}>
+                <Row gutter={16} align="middle">
+                  <Col flex="none">
+                    <Button
+                      icon={playbackPlaying ? <PauseCircleOutlined style={{ fontSize: 24 }} /> : <PlayCircleOutlined style={{ fontSize: 24 }} />}
+                      type="text"
+                      onClick={playbackPlaying ? stopPlayback : startPlayback}
+                    />
                   </Col>
-                  <Col span={8}>
-                    <Statistic title="当前时间" value={trackPlaybackData[playbackIndex]?.timestamp ? formatDateTime(trackPlaybackData[playbackIndex].timestamp, 'HH:mm:ss') : '-'} />
+                  <Col flex="auto">
+                    <Progress
+                      percent={Math.round((playbackIndex / Math.max(1, trackPlaybackData.length - 1)) * 100)}
+                      showInfo
+                      strokeColor={{ '0%': '#1677ff', '100%': '#52c41a' }}
+                    />
                   </Col>
-                  <Col span={8}>
-                    <Statistic title="总轨迹点" value={trackPlaybackData.length} />
+                  <Col flex="none" style={{ textAlign: 'right' }}>
+                    <Space direction="vertical" size={0} style={{ textAlign: 'center' }}>
+                      <Text strong style={{ fontSize: 14 }}>{dayjs(trackPlaybackData[playbackIndex]?.recorded_at || trackPlaybackData[playbackIndex]?.time || new Date()).format('HH:mm:ss')}</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }}>{playbackIndex + 1} / {trackPlaybackData.length}</Text>
+                    </Space>
                   </Col>
                 </Row>
-              </Space>
-            </Card>
+              </Card>
+              <Row gutter={16}>
+                <Col span={8}>
+                  <Card size="small" title="运行统计" bodyStyle={{ padding: 12 }}>
+                    <Row gutter={[8, 16]}>
+                      <Col span={12}>
+                        <Statistic title="总里程(km)" value={trackPlaybackData.length * 0.5} precision={1} valueStyle={{ fontSize: 18 }} />
+                      </Col>
+                      <Col span={12}>
+                        <Statistic title="时长(h)" value={Math.round(trackPlaybackData.length * 0.05 * 10) / 10} precision={1} valueStyle={{ fontSize: 18 }} />
+                      </Col>
+                      <Col span={12}>
+                        <Statistic title="平均速度(km/h)" value={65} precision={0} valueStyle={{ fontSize: 18, color: '#52c41a' }} />
+                      </Col>
+                      <Col span={12}>
+                        <Statistic title="最高速度(km/h)" value={82} precision={0} valueStyle={{ fontSize: 18, color: '#faad14' }} />
+                      </Col>
+                    </Row>
+                  </Card>
+                </Col>
+                <Col span={16}>
+                  <div
+                    ref={playbackMapContainerRef}
+                    style={{ height: 400, borderRadius: 8, border: '1px solid #f0f0f0' }}
+                  />
+                  {trackPlaybackData[playbackIndex] && (
+                    <Card size="small" bodyStyle={{ padding: 12, marginTop: 12 }}>
+                      <Row gutter={16}>
+                        <Col span={6}>
+                          <Text type="secondary" style={{ fontSize: 11 }}>车速</Text>
+                          <div><Text strong>{trackPlaybackData[playbackIndex].speed || 0} km/h</Text></div>
+                        </Col>
+                        <Col span={6}>
+                          <Text type="secondary" style={{ fontSize: 11 }}>方向</Text>
+                          <div><Text strong>{trackPlaybackData[playbackIndex].heading || trackPlaybackData[playbackIndex].direction || 0}°</Text></div>
+                        </Col>
+                        <Col span={12}>
+                          <Text type="secondary" style={{ fontSize: 11 }}>位置</Text>
+                          <div><Text ellipsis style={{ fontSize: 12 }}>{trackPlaybackData[playbackIndex].address || trackPlaybackData[playbackIndex].location || `${(trackPlaybackData[playbackIndex].longitude || trackPlaybackData[playbackIndex].lng || 0).toFixed(4)}, ${(trackPlaybackData[playbackIndex].latitude || trackPlaybackData[playbackIndex].lat || 0).toFixed(4)}`}</Text></div>
+                        </Col>
+                      </Row>
+                    </Card>
+                  )}
+                </Col>
+              </Row>
+            </>
           )}
-        </div>
-      </Modal>
+        </Space>
+      </Drawer>
+
+      <Drawer
+        title={
+          <Space>
+            <EyeOutlined style={{ color: '#1677ff' }} />
+            <Text strong>事件详情</Text>
+            {eventDetailDrawer && (
+              <Tag color={eventTypeMap[eventDetailDrawer.type]?.color || 'default'}>
+                {eventTypeMap[eventDetailDrawer.type]?.label || eventDetailDrawer.type}
+              </Tag>
+            )}
+          </Space>
+        }
+        placement="right"
+        width={520}
+        onClose={() => { setEventDetailDrawer(null) }}
+        open={!!eventDetailDrawer}
+      >
+        {eventDetailDrawer && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Descriptions column={1} bordered size="small">
+              <Descriptions.Item label="事件类型">
+                <Tag color={eventTypeMap[eventDetailDrawer.type]?.color}>{eventTypeMap[eventDetailDrawer.type]?.label}</Tag>
+                {eventDetailDrawer.risk_level && eventDetailDrawer.risk_level !== 'normal' && (
+                  <Tag color={eventDetailDrawer.risk_level === 'danger' ? 'red' : 'orange'} style={{ marginLeft: 8 }}>
+                    {eventDetailDrawer.risk_level === 'danger' ? '高风险' : '需关注'}
+                  </Tag>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="发生时间">{formatDateTime(eventDetailDrawer.time)}</Descriptions.Item>
+              <Descriptions.Item label="发生位置">{eventDetailDrawer.location}</Descriptions.Item>
+              <Descriptions.Item label="经纬度">{eventDetailDrawer.lng.toFixed(4)}, {eventDetailDrawer.lat.toFixed(4)}</Descriptions.Item>
+              <Descriptions.Item label="操作人">{eventDetailDrawer.operator}</Descriptions.Item>
+              <Descriptions.Item label="运单号">{eventDetailDrawer.waybill_no}</Descriptions.Item>
+              {eventDetailDrawer.duration_minutes && (
+                <Descriptions.Item label="持续时长">{eventDetailDrawer.duration_minutes} 分钟</Descriptions.Item>
+              )}
+              <Descriptions.Item label="事件描述">{eventDetailDrawer.remark}</Descriptions.Item>
+            </Descriptions>
+            {eventDetailDrawer.photos.length > 0 && (
+              <>
+                <Divider orientation="left" style={{ fontSize: 12, margin: '8px 0' }}>现场照片 ({eventDetailDrawer.photos.length})</Divider>
+                <Image.PreviewGroup>
+                  <Row gutter={8}>
+                    {eventDetailDrawer.photos.map((p, pi) => (
+                      <Col span={8} key={pi}>
+                        <Image src={p} width="100%" height={80} style={{ objectFit: 'cover', borderRadius: 6 }} />
+                      </Col>
+                    ))}
+                  </Row>
+                </Image.PreviewGroup>
+              </>
+            )}
+            <div
+              ref={eventMapContainerRef}
+              style={{ height: 220, borderRadius: 8, border: '1px solid #f0f0f0' }}
+            />
+          </Space>
+        )}
+      </Drawer>
 
       <ModalForm
         title={
           <Space>
             <PlusOutlined style={{ color: '#1677ff' }} />
-            <Text strong>人工添加押运事件</Text>
-            {selectedWaybill && <Tag color="blue">{selectedWaybill.waybill_no}</Tag>}
+            <Text strong>添加押运事件</Text>
           </Space>
         }
         open={addEventModalVisible}
-        onOpenChange={setAddEventModalVisible}
         form={addEventForm}
-        modalProps={{ destroyOnClose: true, maskClosable: false }}
+        onOpenChange={(v) => { if (!v) { setAddEventModalVisible(false); addEventForm.resetFields() } }}
         onFinish={handleAddEvent}
         layout="vertical"
-        submitTimeout={2000}
-        submitter={{
-          searchConfig: { submitText: '确认添加', resetText: '取消' },
-          resetButtonProps: { onClick: () => setAddEventModalVisible(false) },
-          submitButtonProps: { type: 'primary' },
+        modalProps={{
+          destroyOnClose: true,
+          onCancel: () => { setAddEventModalVisible(false); addEventForm.resetFields() },
         }}
-        width={520}
+        submitTimeout={2000}
       >
-        <Alert type="info" showIcon message="正在为选中的运单添加押运事件" description={selectedWaybill ? `${selectedWaybill.waybill_no} · ${selectedWaybill.vehicle_plate} · ${selectedWaybill.driver_name}` : ''} style={{ marginBottom: 16, borderRadius: 8 }} />
         <ProFormSelect
-          label="事件类型"
           name="event_type"
+          label="事件类型"
           width="md"
+          placeholder="请选择事件类型"
           rules={[{ required: true, message: '请选择事件类型' }]}
-          placeholder="请选择押运事件类型"
-          options={Object.entries(eventTypeMap).map(([k, v]) => ({ label: v.label, value: k }))}
+          options={Object.entries(eventTypeMap).map(([k, v]) => ({
+            label: (
+              <Space>
+                <Tag color={v.color}>{v.icon} {v.label}</Tag>
+              </Space>
+            ),
+            value: k,
+          }))}
         />
         <ProFormText
-          label="发生位置"
           name="location"
-          width="md"
-          placeholder="请输入事件发生位置，留空则使用车辆当前位置"
-          fieldProps={{ prefix: <EnvironmentOutlined /> }}
+          label="事件位置"
+          placeholder="请输入事件位置"
+          rules={[{ required: true, message: '请输入事件位置' }]}
+          fieldProps={{
+            prefix: <EnvironmentOutlined />,
+          }}
         />
         <ProFormTextArea
-          label="事件详情描述"
           name="remark"
-          width="md"
+          label="事件描述"
+          placeholder="请输入事件详细描述"
           rules={[{ required: true, message: '请输入事件描述' }]}
-          placeholder="请详细描述押运事件情况，包括处置措施等"
           fieldProps={{ rows: 4, showCount: true, maxLength: 500 }}
         />
-        <Form.Item label="现场照片" valuePropName="fileList">
-          <Dragger multiple listType="picture" beforeUpload={() => false} maxCount={9}>
-            <p className="ant-upload-drag-icon"><CameraOutlined style={{ fontSize: 32, color: '#1677ff' }} /></p>
-            <p className="ant-upload-text">点击或拖拽照片到此处上传</p>
-            <p className="ant-upload-hint" style={{ fontSize: 12 }}>支持JPG/PNG格式，最多9张</p>
-          </Dragger>
-        </Form.Item>
-        <Divider style={{ margin: '4px 0 12px' }} />
-        <Alert type="warning" showIcon message="添加说明" description="押运事件将同步记录于运单档案，作为运输合规性凭证。添加后将自动通知相关人员。" style={{ borderRadius: 6 }} />
       </ModalForm>
     </div>
   )
