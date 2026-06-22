@@ -205,9 +205,16 @@ const Weather: React.FC = () => {
         longitude: values.longitude,
         query_time: values.query_time ? values.query_time.format('YYYY-MM-DD HH:mm:ss') : dayjs().format('YYYY-MM-DD HH:mm:ss'),
         location_name: values.location_name,
-        auto_fill: true,
       })
-      setHistoricalResult(res)
+      if (Array.isArray(res) && res.length > 0) {
+        setHistoricalResult(res[0])
+      } else if (res && !Array.isArray(res)) {
+        setHistoricalResult(res)
+      } else {
+        setHistoricalResult(null)
+        message.info('未查询到历史天气数据')
+        return
+      }
       message.success('查询成功')
     } catch (e: any) {
       if (e.errorFields) return
@@ -324,7 +331,7 @@ const Weather: React.FC = () => {
   const pushColumns = [
     { title: '推送ID', dataIndex: 'push_id', width: 160, render: (v: string) => <Text copyable style={{ fontSize: 12 }}>{v}</Text> },
     {
-      title: '阶段', dataIndex: 'phase', width: 100,
+      title: '阶段', dataIndex: 'push_phase', width: 100,
       render: (v: string) => {
         const p = phaseMap[v] || phaseMap.en_route
         return <Tag color={p.color}>{p.label}</Tag>

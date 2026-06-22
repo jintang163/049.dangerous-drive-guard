@@ -546,21 +546,41 @@ export const rescueApi = {
 export interface WeatherPushRecord {
   id: number
   push_id: string
-  phase: 'pre_departure' | 'en_route' | 'emergency'
+  push_phase: 'pre_departure' | 'en_route' | 'emergency'
+  warning_id?: number
+  warning_no?: string
   warning_type: string
-  warning_level: number
+  warning_level: 'blue' | 'yellow' | 'orange' | 'red'
   title: string
   content: string
   target_type: 'vehicle' | 'driver' | 'waybill' | 'all'
-  target_ids: number[]
+  target_ids?: number[]
+  waybill_id?: number
+  waybill_no?: string
+  vehicle_id?: number
+  plate_number?: string
+  driver_id?: number
+  driver_name?: string
+  push_channels?: string[]
+  status: 'pending' | 'sending' | 'sent' | 'failed'
   success_count: number
   fail_count: number
   read_count: number
+  read_status?: number
+  read_time?: string
+  driver_response?: string
+  response_time?: string
+  response_note?: string
+  speed_suggestion_kmh?: number
+  segment_start_lat?: number
+  segment_start_lng?: number
+  segment_end_lat?: number
+  segment_end_lng?: number
+  segment_distance_km?: number
   operator_id?: number
   operator_name?: string
-  status: 'pending' | 'sending' | 'sent' | 'failed'
-  created_at: string
   sent_at?: string
+  created_at: string
 }
 
 export interface HistoricalWeather {
@@ -615,6 +635,8 @@ export interface RouteWeatherAnalysis {
   total_distance_km: number
   overall_risk_level: 'low' | 'medium' | 'high' | 'extreme'
   safe_speed_suggestion: number
+  has_extreme_weather: boolean
+  should_detour: boolean
   warnings_on_route: WeatherWarning[]
   segment_warnings: Array<{
     segment_index: number
@@ -623,10 +645,12 @@ export interface RouteWeatherAnalysis {
     end_lat: number
     end_lng: number
     distance_km: number
-    warning_types: string[]
-    risk_level: string
-    suggested_speed: number
+    warning_type: string
+    warning_level: string
     description: string
+    speed_suggestion_kmh: number
+    detour_suggested: boolean
+    estimated_eta: string
   }>
   weather_points: Array<{
     lat: number
@@ -641,9 +665,10 @@ export interface RouteWeatherAnalysis {
     road_slippery: boolean
     suggested_speed: number
     has_warning: boolean
+    warning_type?: string
+    warning_level?: string
   }>
   suggestions: string[]
-  should_detour: boolean
   detour_suggestion?: string
   analyzed_at: string
 }
@@ -656,11 +681,16 @@ export interface WeatherPushRequest {
   title?: string
   content?: string
   waybill_id?: number
+  segment_start_lat?: number
+  segment_start_lng?: number
+  segment_end_lat?: number
+  segment_end_lng?: number
 }
 
 export interface OperationSuspendRequest {
   trigger_type: 'automatic' | 'manual'
   trigger_reason: string
+  trigger_warning_id?: number
   weather_type: string
   visibility?: number
   wind_speed?: number
@@ -672,6 +702,8 @@ export interface OperationSuspendRequest {
   affected_waybill_ids?: number[]
   suggested_speed?: number
   expires_at?: string
+  auto_triggered?: boolean
+  remark?: string
 }
 
 export interface OperationResumeRequest {
@@ -682,9 +714,10 @@ export interface OperationResumeRequest {
 export interface HistoricalWeatherQuery {
   latitude: number
   longitude: number
-  query_time: string
   location_name?: string
-  auto_fill?: boolean
+  query_time?: string
+  start_time?: string
+  end_time?: string
 }
 
 export const weatherApi = {
@@ -698,7 +731,7 @@ export const weatherApi = {
   getRouteAnalysis: (routeId: number) => api.get<RouteWeatherAnalysis>(`/weather/route/${routeId}/analysis`),
   analyzeRouteByWaybill: (waybillId: number) => api.get<RouteWeatherAnalysis>(`/weather/route/waybill/${waybillId}/analysis`),
   getHistoricalWeather: (params: HistoricalWeatherQuery) =>
-    api.get<HistoricalWeather>('/weather/historical', params),
+    api.get<HistoricalWeather[]>('/weather/historical', params),
   pushWeatherWarning: (data: WeatherPushRequest) =>
     api.post<{ success: boolean; push_id: string; sent_count: number; failed_count: number }>('/weather/push', data),
   listPushRecords: (params?: PageParams & { phase?: string; status?: string; target_type?: string }) =>
@@ -712,6 +745,19 @@ export const weatherApi = {
     api.getPage<OperationSuspension>('/weather/operation/suspensions', params),
   getCurrentSuspension: (params?: { lat?: number; lng?: number }) =>
     api.get<OperationSuspension | null>('/weather/operation/current-suspension', params),
+  autoCheckSuspend: () =>
+    api.post<{ triggered: boolean; suspension: OperationSuspension | null }>('/weather/operation/auto-check'),
+
+  getDriverUnreadCount: (driver_id: number) =>
+    api.get<{ unread_count: number }>('/weather/driver/unread-count', { driver_id }),
+  markPushRead: (push_id: string, driver_id?: number) =>
+    api.post<void>(`/weather/driver/push/${push_id}/read`, {}, { params: driver_id ? { driver_id } : undefined }),
+  respondToPush: (push_id: string, data: { driver_id?: number; response: string; note?: string }) =>
+    api.post<void>(`/weather/driver/push/${push_id}/respond`, data),
+  preDepartureWarning: (waybill_id: number) =>
+    api.post<WeatherPushRecord | null>('/weather/driver/pre-departure', { waybill_id }),
+  enRouteWarning: (data: { waybill_id: number; current_lat: number; current_lng: number }) =>
+    api.post<WeatherPushRecord | null>('/weather/driver/en-route', data),
 }
 
 export const blockchainApi = {

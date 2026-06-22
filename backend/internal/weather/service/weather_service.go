@@ -534,6 +534,17 @@ func (s *WeatherService) SyncWarningsFromAPI(ctx context.Context, province strin
 		}
 	}
 
+	if syncedCount > 0 {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Sugar.Errorf("auto suspend after sync panic: %v", r)
+				}
+			}()
+			_, _, _ = s.CheckAndAutoSuspend(context.Background())
+		}()
+	}
+
 	return syncedCount, nil
 }
 
@@ -788,12 +799,15 @@ func (s *WeatherService) AnalyzeRouteWeather(ctx context.Context, routeID int64)
 
 	if len(weatherPoints) == 0 {
 		return &model.RouteWeatherAnalysis{
-			RouteID:          routeID,
-			OverallRiskLevel: "low",
-			SafeSpeed:        80,
-			WeatherPoints:    []*model.RouteWeatherPoint{},
-			SegmentWarnings:  []*model.SegmentWarning{},
-			SuggestionSummary: "路线天气状况良好，可正常行驶。",
+			RouteID:           routeID,
+			OverallRiskLevel:  "low",
+			SafeSpeed:         80,
+			WeatherPoints:     []*model.RouteWeatherPoint{},
+			SegmentWarnings:   []*model.SegmentWarning{},
+			WarningsOnRoute:   []*model.WeatherWarning{},
+			Suggestions:       []string{"路线天气状况良好，可正常行驶。"},
+			ShouldDetour:      false,
+			AnalyzedAt:        time.Now(),
 		}, nil
 	}
 
@@ -802,20 +816,21 @@ func (s *WeatherService) AnalyzeRouteWeather(ctx context.Context, routeID int64)
 
 	analysis := &model.RouteWeatherAnalysis{
 		RouteID:           routeID,
+		WaybillID:         routePlan.WaybillID,
 		TotalDistance:     routePlan.TotalDistance / 1000,
-		EstimatedDuration: routePlan.EstimatedDuration / 60,
 		WeatherPoints:     weatherPoints,
 		SegmentWarnings:   []*model.SegmentWarning{},
-		RainSegments:      []*model.SegmentWarning{},
-		SlipperySegments:  []*model.SegmentWarning{},
-		FogSegments:       []*model.SegmentWarning{},
-		WindSegments:      []*model.SegmentWarning{},
+		WarningsOnRoute:   []*model.WeatherWarning{},
+		Suggestions:       []string{},
+		AnalyzedAt:        time.Now(),
 	}
 
 	var totalVisibility float64
 	var visibilityCount int
 	minSpeed := 120
 	hasExtreme := false
+	hasHighRisk := false
+	seenWarnings := make(map[string]bool)
 
 	for i, point := range weatherPoints {
 		if point.WeatherData.Visibility > 0 {
@@ -847,53 +862,72 @@ func (s *WeatherService) AnalyzeRouteWeather(ctx context.Context, routeID int64)
 			sw.Description = fmt.Sprintf("路段天气预警: %s-%s", point.WarningType, point.WarningLevel)
 			sw.DetourSuggested = point.WarningLevel == "red" || point.WarningLevel == "orange"
 			analysis.SegmentWarnings = append(analysis.SegmentWarnings, sw)
+			if sw.DetourSuggested {
+				hasHighRisk = true
+			}
+			warnKey := fmt.Sprintf("%s-%s", point.WarningType, point.WarningLevel)
+			if !seenWarnings[warnKey] {
+				seenWarnings[warnKey] = true
+				analysis.WarningsOnRoute = append(analysis.WarningsOnRoute, &model.WeatherWarning{
+					WarningType:  model.WarningType(point.WarningType),
+					WarningLevel: model.WarningLevel(point.WarningLevel),
+					Title:        fmt.Sprintf("%s预警", point.WarningType),
+				})
+			}
 		}
 
 		if point.WeatherData.Precipitation > 0 || strings.Contains(condition, "雨") {
-			sw.WarningType = "rain"
-			sw.Description = fmt.Sprintf("降雨路段，降雨量%.1fmm", point.WeatherData.Precipitation)
-			analysis.RainSegments = append(analysis.RainSegments, sw)
+			if sw.WarningType == "" {
+				sw.WarningType = "rain"
+				sw.Description = fmt.Sprintf("降雨路段，降雨量%.1fmm", point.WeatherData.Precipitation)
+				analysis.SegmentWarnings = append(analysis.SegmentWarnings, sw)
+			}
 		}
 
 		if point.WeatherData.RoadSlippery {
-			sw.WarningType = "slippery"
-			sw.Description = "路面湿滑，请减速慢行"
-			analysis.SlipperySegments = append(analysis.SlipperySegments, sw)
+			if sw.WarningType == "" {
+				sw.WarningType = "slippery"
+				sw.Description = "路面湿滑，请减速慢行"
+				analysis.SegmentWarnings = append(analysis.SegmentWarnings, sw)
+			}
 		}
 
 		if strings.Contains(condition, "雾") || strings.Contains(condition, "霾") ||
 			(point.WeatherData.Visibility > 0 && point.WeatherData.Visibility < 1000) {
-			sw.WarningType = "fog"
-			sw.Description = fmt.Sprintf("低能见度路段，能见度%.0fm", point.WeatherData.Visibility)
-			if point.WeatherData.Visibility < 200 {
-				sw.DetourSuggested = true
+			if sw.WarningType == "" {
+				sw.WarningType = "fog"
+				sw.Description = fmt.Sprintf("低能见度路段，能见度%.0fm", point.WeatherData.Visibility)
+				if point.WeatherData.Visibility < 200 {
+					sw.DetourSuggested = true
+					hasHighRisk = true
+				}
+				analysis.SegmentWarnings = append(analysis.SegmentWarnings, sw)
 			}
-			analysis.FogSegments = append(analysis.FogSegments, sw)
 		}
 
 		if point.WeatherData.WindSpeed > 10 {
-			sw.WarningType = "wind"
-			sw.Description = fmt.Sprintf("大风路段，风速%.1fm/s", point.WeatherData.WindSpeed)
-			if point.WeatherData.WindSpeed > 17 {
-				sw.DetourSuggested = true
+			if sw.WarningType == "" {
+				sw.WarningType = "wind"
+				sw.Description = fmt.Sprintf("大风路段，风速%.1fm/s", point.WeatherData.WindSpeed)
+				if point.WeatherData.WindSpeed > 17 {
+					sw.DetourSuggested = true
+					hasHighRisk = true
+				}
+				analysis.SegmentWarnings = append(analysis.SegmentWarnings, sw)
 			}
-			analysis.WindSegments = append(analysis.WindSegments, sw)
 		}
 	}
 
-	if visibilityCount > 0 {
-		analysis.AverageVisibility = totalVisibility / float64(visibilityCount) / 1000
-	}
 	analysis.SafeSpeed = minSpeed
 	analysis.HasExtremeWeather = hasExtreme
+	analysis.ShouldDetour = hasExtreme || hasHighRisk
 
 	switch {
 	case hasExtreme:
 		analysis.OverallRiskLevel = "extreme"
-		analysis.OperationSuggested = true
-	case len(analysis.SegmentWarnings) > 3 || len(analysis.RainSegments) > 3 || len(analysis.FogSegments) > 3:
+	case len(analysis.SegmentWarnings) > 3:
 		analysis.OverallRiskLevel = "high"
-	case len(analysis.SegmentWarnings) > 0 || len(analysis.RainSegments) > 0 || len(analysis.FogSegments) > 0:
+	case len(analysis.SegmentWarnings) > 0:
 		analysis.OverallRiskLevel = "medium"
 	default:
 		analysis.OverallRiskLevel = "low"
@@ -901,15 +935,30 @@ func (s *WeatherService) AnalyzeRouteWeather(ctx context.Context, routeID int64)
 
 	switch analysis.OverallRiskLevel {
 	case "extreme":
-		analysis.SuggestionSummary = "路线存在极端天气，能见度极低或风力过大，强烈建议暂停运营，等待天气好转。"
-		analysis.AlternativeRouteHint = "建议立即暂停所有相关运输任务，车辆就近停靠安全区域。"
+		analysis.Suggestions = []string{
+			"路线存在极端天气，能见度极低或风力过大，强烈建议暂停运营。",
+			"车辆立即就近停靠安全区域，等待天气好转。",
+			"通知调度中心，评估是否需要改派或取消运输任务。",
+		}
+		analysis.DetourSuggestion = "建议立即暂停所有相关运输任务，车辆就近停靠安全区域。"
 	case "high":
-		analysis.SuggestionSummary = "路线存在多处恶劣天气路段，高风险运营，建议重新规划路线或推迟出发。"
-		analysis.AlternativeRouteHint = "建议触发路径重规划，避开高风险天气区域。"
+		analysis.Suggestions = []string{
+			"路线存在多处恶劣天气路段，高风险运营。",
+			"建议重新规划路线或推迟出发。",
+			"提醒驾驶员谨慎驾驶，保持安全车距。",
+		}
+		analysis.DetourSuggestion = "建议触发路径重规划，避开高风险天气区域。"
 	case "medium":
-		analysis.SuggestionSummary = "路线存在部分恶劣天气路段，中风险运营，需提醒驾驶员谨慎驾驶。"
+		analysis.Suggestions = []string{
+			"路线存在部分恶劣天气路段，中风险运营。",
+			"需提醒驾驶员谨慎驾驶，注意路况变化。",
+			"保持安全车速，随时关注天气变化。",
+		}
 	default:
-		analysis.SuggestionSummary = "路线天气状况良好，可正常行驶，注意常规安全驾驶。"
+		analysis.Suggestions = []string{
+			"路线天气状况良好，可正常行驶。",
+			"注意常规安全驾驶，遵守交通规则。",
+		}
 	}
 
 	return analysis, nil
@@ -1018,6 +1067,142 @@ func (s *WeatherService) DB() *gorm.DB {
 	return s.db
 }
 
+func (s *WeatherService) CheckAndAutoSuspend(ctx context.Context) (bool, *model.OperationSuspension, error) {
+	currentSuspension, err := s.GetCurrentSuspension(ctx)
+	if err != nil {
+		return false, nil, fmt.Errorf("check current suspension error: %w", err)
+	}
+	if currentSuspension != nil {
+		return false, currentSuspension, nil
+	}
+
+	activeWarnings, err := s.GetActiveWarnings(ctx, "")
+	if err != nil {
+		return false, nil, fmt.Errorf("get active warnings error: %w", err)
+	}
+
+	var targetWarning *model.WeatherWarning
+	var minVisibility float64
+	var maxWindSpeed float64
+
+	for _, w := range activeWarnings {
+		triggerStop := false
+
+		if w.WarningLevel == model.WarningLevelRed {
+			triggerStop = true
+		}
+
+		if w.WarningType == model.WarningTypeFog && w.SpeedSuggestion == 0 {
+			triggerStop = true
+		}
+
+		if triggerStop {
+			targetWarning = w
+			break
+		}
+	}
+
+	if targetWarning == nil {
+		return false, nil, nil
+	}
+
+	extremeVisibility := s.cfg.Weather.ExtremeVisibility
+	if extremeVisibility <= 0 {
+		extremeVisibility = 50
+	}
+
+	weatherType := string(targetWarning.WarningType)
+	visibility := 0.0
+	windSpeed := 0.0
+
+	switch targetWarning.WarningType {
+	case model.WarningTypeFog:
+		visibility = extremeVisibility / 2
+	case model.WarningTypeRainstorm:
+		visibility = 500
+	case model.WarningTypeStrongWind:
+		windSpeed = s.cfg.Weather.ExtremeWindSpeed
+		if windSpeed <= 0 {
+			windSpeed = 25
+		}
+	}
+
+	affectedRegion := targetWarning.Title
+	if len(targetWarning.AffectedCities) > 0 {
+		affectedRegion = fmt.Sprintf("%s及周边地区", targetWarning.AffectedCities[0])
+	}
+
+	radiusKm := 50.0
+	if targetWarning.CenterLat != 0 {
+		radiusKm = 100
+	}
+
+	centerLat := targetWarning.CenterLat
+	centerLng := targetWarning.CenterLng
+	if centerLat == 0 && centerLng == 0 {
+		centerLat = 30.0
+		centerLng = 114.0
+	}
+
+	triggerWarningID := targetWarning.ID
+
+	suspendReq := &model.OperationSuspendRequest{
+		TriggerType:     "automatic",
+		TriggerReason:   fmt.Sprintf("系统检测到%s-%s预警，自动触发运营暂停", targetWarning.WarningType, targetWarning.WarningLevel),
+		TriggerWarningID: &triggerWarningID,
+		WeatherType:     weatherType,
+		Visibility:      visibility,
+		WindSpeed:       windSpeed,
+		AffectedRegion:  affectedRegion,
+		CenterLat:       centerLat,
+		CenterLng:       centerLng,
+		RadiusKm:        radiusKm,
+		SuggestedSpeed:  0,
+		AutoTriggered:   true,
+		Remark:          "系统自动触发：极端天气条件下自动暂停运营",
+	}
+
+	suspension, err := s.TriggerOperationSuspend(ctx, suspendReq, 0, "system")
+	if err != nil {
+		return false, nil, fmt.Errorf("auto suspend error: %w", err)
+	}
+
+	go s.sendSuspensionNotifications(context.Background(), suspension)
+
+	logger.Sugar.Warnf("auto operation suspended: no=%s, warning_type=%s, visibility=%.1fm, wind_speed=%.1fm/s",
+		suspension.SuspensionNo, weatherType, visibility, windSpeed)
+
+	return true, suspension, nil
+}
+
+func (s *WeatherService) sendSuspensionNotifications(ctx context.Context, suspension *model.OperationSuspension) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Sugar.Errorf("send suspension notifications panic: %v", r)
+		}
+	}()
+
+	pushReq := &model.WeatherPushRequest{
+		Phase:      string(model.PushPhaseEmergency),
+		TargetType: "all",
+		Title:      fmt.Sprintf("【紧急停运通知】%s", suspension.TriggerReason),
+		Content: fmt.Sprintf("因%s，现暂停%s范围内所有危化品车辆运营。\n"+
+			"建议措施：\n"+
+			"1. 在途车辆请立即就近停靠安全区域\n"+
+			"2. 开启雾灯和双闪警示灯\n"+
+			"3. 等待天气好转后恢复运营\n"+
+			"4. 如有紧急情况请联系调度中心",
+			suspension.TriggerReason, suspension.AffectedRegion),
+	}
+
+	_, err := s.PushWeatherWarning(ctx, pushReq)
+	if err != nil {
+		logger.Sugar.Errorf("push suspension warning error: %v", err)
+	}
+
+	logger.Sugar.Infof("suspension notification sent: suspension_no=%s", suspension.SuspensionNo)
+}
+
 func (s *WeatherService) GetWarning(ctx context.Context, id int64) (*model.WeatherWarning, error) {
 	if id <= 0 {
 		return nil, fmt.Errorf("invalid warning id")
@@ -1097,31 +1282,43 @@ func (s *WeatherService) ReplanAffectedRoutes(ctx context.Context, warningID int
 }
 
 func (s *WeatherService) GetHistoricalWeather(ctx context.Context, query *model.HistoricalWeatherQuery) ([]*model.HistoricalWeather, error) {
-	if query.StartDate == "" || query.EndDate == "" {
-		return nil, fmt.Errorf("start date and end date are required")
-	}
+	var startTime, endTime time.Time
+	var err error
 
-	startTime, err := time.Parse("2006-01-02", query.StartDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid start date format: %w", err)
+	if query.StartTime != "" && query.EndTime != "" {
+		startTime, err = time.Parse(time.RFC3339, query.StartTime)
+		if err != nil {
+			startTime, err = time.Parse("2006-01-02 15:04:05", query.StartTime)
+			if err != nil {
+				return nil, fmt.Errorf("invalid start time format: %w", err)
+			}
+		}
+		endTime, err = time.Parse(time.RFC3339, query.EndTime)
+		if err != nil {
+			endTime, err = time.Parse("2006-01-02 15:04:05", query.EndTime)
+			if err != nil {
+				return nil, fmt.Errorf("invalid end time format: %w", err)
+			}
+		}
+	} else if query.QueryTime != "" {
+		queryTime, err := time.Parse(time.RFC3339, query.QueryTime)
+		if err != nil {
+			queryTime, err = time.Parse("2006-01-02 15:04:05", query.QueryTime)
+			if err != nil {
+				return nil, fmt.Errorf("invalid query time format: %w", err)
+			}
+		}
+		startTime = queryTime.Add(-1 * time.Hour)
+		endTime = queryTime.Add(1 * time.Hour)
+	} else {
+		return nil, fmt.Errorf("query_time or start_time/end_time is required")
 	}
-	endTime, err := time.Parse("2006-01-02", query.EndDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid end date format: %w", err)
-	}
-	endTime = endTime.Add(24 * time.Hour)
 
 	dbQuery := s.db.WithContext(ctx).Model(&model.HistoricalWeather{}).
-		Where("record_date >= ? AND record_date < ?", startTime, endTime)
+		Where("query_time >= ? AND query_time < ?", startTime, endTime)
 
-	if query.Province != "" {
-		dbQuery = dbQuery.Where("province = ?", query.Province)
-	}
-	if query.City != "" {
-		dbQuery = dbQuery.Where("city = ?", query.City)
-	}
-	if query.District != "" {
-		dbQuery = dbQuery.Where("district = ?", query.District)
+	if query.LocationName != "" {
+		dbQuery = dbQuery.Where("location_name LIKE ?", "%"+query.LocationName+"%")
 	}
 	if query.Latitude != 0 && query.Longitude != 0 {
 		dbQuery = dbQuery.Where(
@@ -1131,7 +1328,7 @@ func (s *WeatherService) GetHistoricalWeather(ctx context.Context, query *model.
 	}
 
 	var results []*model.HistoricalWeather
-	if err := dbQuery.Order("record_date ASC").Find(&results).Error; err != nil {
+	if err := dbQuery.Order("query_time ASC").Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("query historical weather error: %w", err)
 	}
 
@@ -1150,8 +1347,9 @@ func (s *WeatherService) fetchAndStoreHistorical(ctx context.Context, query *mod
 	var results []*model.HistoricalWeather
 	location := fmt.Sprintf("%.4f,%.4f", query.Longitude, query.Latitude)
 
-	for d := startTime; d.Before(endTime); d = d.AddDate(0, 0, 1) {
-		dateStr := d.Format("20060102")
+	step := time.Hour
+	for t := startTime; t.Before(endTime); t = t.Add(step) {
+		dateStr := t.Format("20060102")
 		url := fmt.Sprintf("%s/historical/weather?location=%s&date=%s&key=%s",
 			s.qweatherURL, location, dateStr, s.qweatherKey)
 
@@ -1177,41 +1375,49 @@ func (s *WeatherService) fetchAndStoreHistorical(ctx context.Context, query *mod
 		}
 
 		for _, day := range hResp.WeatherDaily {
-			fxDate, _ := time.Parse("2006-01-02", day.Date)
 			tempMax, _ := strconv.ParseFloat(day.TempMax, 64)
 			tempMin, _ := strconv.ParseFloat(day.TempMin, 64)
 			humidity, _ := strconv.ParseFloat(day.Humidity, 64)
 			precip, _ := strconv.ParseFloat(day.Precip, 64)
 			windSpeed, _ := strconv.ParseFloat(day.WindSpeed, 64)
+			windDir, _ := strconv.Atoi(day.WindDir)
+			visibility := 10000.0
+			if day.Visibility != "" {
+				visibility, _ = strconv.ParseFloat(day.Visibility, 64)
+				visibility *= 1000
+			}
+
+			avgTemp := (tempMax + tempMin) / 2
+			weatherCondition := day.TextDay
+			if weatherCondition == "" {
+				weatherCondition = "晴"
+			}
 
 			hw := &model.HistoricalWeather{
-				Latitude:      query.Latitude,
-				Longitude:     query.Longitude,
-				Province:      query.Province,
-				City:          query.City,
-				District:      query.District,
-				RecordDate:    fxDate,
-				TempMax:       tempMax,
-				TempMin:       tempMin,
-				TempAvg:       (tempMax + tempMin) / 2,
-				Humidity:      humidity,
-				WindSpeed:     windSpeed,
-				WindDirection: day.WindDir,
-				Precipitation: precip,
-				RoadSlippery:  precip >= s.cfg.Weather.SlipperyRainMm || tempMin <= 0,
-				DataSource:    "qweather",
+				Latitude:         query.Latitude,
+				Longitude:        query.Longitude,
+				LocationName:     query.LocationName,
+				QueryTime:        t,
+				WeatherCondition: weatherCondition,
+				Temperature:      avgTemp,
+				FeelsLike:        avgTemp,
+				Humidity:         humidity,
+				WindSpeed:        windSpeed,
+				WindDirection:    windDir,
+				Visibility:       visibility,
+				Precipitation:    precip,
+				PrecipType:       "rain",
+				RoadSlippery:     precip >= s.cfg.Weather.SlipperyRainMm || tempMin <= 0,
+				Warnings:         model.JSON("[]"),
+				DataSource:       "qweather",
 			}
 			if precip > 0 {
 				hw.PrecipType = "rain"
-				hw.Condition = "雨"
-			} else if tempMin <= 0 {
-				hw.Condition = "晴/阴"
-			} else {
-				hw.Condition = "晴/阴"
-			}
-			if precip >= s.cfg.Weather.SlipperyRainMm {
 				hw.RoadCondition = "wet"
-				hw.WarningType = string(model.WarningTypeSlippery)
+			} else if tempMin <= 0 {
+				hw.RoadCondition = "icy"
+			} else {
+				hw.RoadCondition = "dry"
 			}
 
 			s.db.WithContext(ctx).Create(hw)
@@ -1230,72 +1436,117 @@ func (s *WeatherService) fetchAndStoreHistorical(ctx context.Context, query *mod
 
 func (s *WeatherService) generateMockHistorical(query *model.HistoricalWeatherQuery, startTime, endTime time.Time) []*model.HistoricalWeather {
 	var results []*model.HistoricalWeather
-	for d := startTime; d.Before(endTime); d = d.AddDate(0, 0, 1) {
-		seed := float64(d.YearDay())
-		tempAvg := 15 + math.Sin(seed/30)*15
+	step := time.Hour * 3
+	for t := startTime; t.Before(endTime); t = t.Add(step) {
+		seed := float64(t.Unix() / 3600)
+		temp := 15 + math.Sin(seed/24)*10
 		precip := math.Max(0, math.Sin(seed/7)*5)
 		humidity := 50 + math.Sin(seed/5)*30
 		windSpeed := 2 + math.Abs(math.Sin(seed/11))*8
+		windDir := int(math.Mod(seed, 360))
+		visibility := 8000 + math.Sin(seed/3)*3000
+		feelsLike := temp + math.Sin(seed/4)*2
+
+		weatherCondition := "晴"
+		roadCondition := "dry"
+		roadSlippery := false
+
+		switch {
+		case precip > 10:
+			weatherCondition = "暴雨"
+			roadCondition = "wet"
+			roadSlippery = true
+		case precip > 5:
+			weatherCondition = "中雨"
+			roadCondition = "wet"
+			roadSlippery = true
+		case precip > 0:
+			weatherCondition = "小雨"
+			roadCondition = "moist"
+		case visibility < 1000:
+			weatherCondition = "雾"
+		case temp < 0:
+			weatherCondition = "晴"
+			roadCondition = "icy"
+		}
+
+		var warnings []string
+		if visibility < 200 {
+			warnings = append(warnings, "fog_orange")
+		} else if visibility < 500 {
+			warnings = append(warnings, "fog_yellow")
+		}
+		if precip > 8 {
+			warnings = append(warnings, "rainstorm_orange")
+		} else if precip > 3 {
+			warnings = append(warnings, "rainstorm_yellow")
+		}
+		if windSpeed > 17 {
+			warnings = append(warnings, "strong_wind_blue")
+		}
+
+		warningsJSON, _ := json.Marshal(warnings)
 
 		hw := &model.HistoricalWeather{
-			Latitude:      query.Latitude,
-			Longitude:     query.Longitude,
-			Province:      query.Province,
-			City:          query.City,
-			District:      query.District,
-			RecordDate:    d,
-			TempMax:       tempAvg + 5,
-			TempMin:       tempAvg - 5,
-			TempAvg:       tempAvg,
-			Humidity:      humidity,
-			WindSpeed:     windSpeed,
-			WindDirection: "东南风",
-			Precipitation: precip,
-			Visibility:    8000 + math.Sin(seed/3)*3000,
-			RoadSlippery:  precip >= s.cfg.Weather.SlipperyRainMm || tempAvg <= 0,
-			Condition:     "晴",
-			DataSource:    "generated",
+			Latitude:         query.Latitude,
+			Longitude:        query.Longitude,
+			LocationName:     query.LocationName,
+			QueryTime:        t,
+			WeatherCondition: weatherCondition,
+			Temperature:      temp,
+			FeelsLike:        feelsLike,
+			Humidity:         humidity,
+			WindSpeed:        windSpeed,
+			WindDirection:    windDir,
+			Visibility:       visibility,
+			Precipitation:    precip,
+			PrecipType:       "rain",
+			RoadCondition:    roadCondition,
+			RoadSlippery:     roadSlippery,
+			UvIndex:          int(math.Max(0, math.Sin(seed/12)*5)),
+			Warnings:         model.JSON(warningsJSON),
+			DataSource:       "mock",
 		}
-		if precip > 2 {
-			hw.Condition = "中雨"
-			hw.RoadCondition = "wet"
-		} else if precip > 0 {
-			hw.Condition = "小雨"
-			hw.RoadCondition = "moist"
+		if len(warnings) > 0 {
+			hw.WarningType = strings.Split(warnings[0], "_")[0]
+			hw.WarningLevel = strings.Split(warnings[0], "_")[1]
 		}
-		if precip >= s.cfg.Weather.SlipperyRainMm {
-			hw.WarningType = string(model.WarningTypeSlippery)
-		}
-		if hw.Visibility < 1000 {
-			hw.Condition = "雾"
-			hw.WarningType = string(model.WarningTypeFog)
-		}
+
 		results = append(results, hw)
 	}
 	return results
 }
 
 func (s *WeatherService) PushWeatherWarning(ctx context.Context, req *model.WeatherPushRequest) (*model.WeatherPushRecord, error) {
-	if req.WaybillID <= 0 {
-		return nil, fmt.Errorf("waybill id is required")
-	}
+	var waybillID int64
+	var waybillNo, plateNumber, driverName string
+	var vehicleID, driverID int64
 
-	var waybill model.Waybill
-	if err := s.db.WithContext(ctx).Where("id = ?", req.WaybillID).First(&waybill).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("waybill not found")
+	if req.WaybillID != nil && *req.WaybillID > 0 {
+		waybillID = *req.WaybillID
+		var waybill model.Waybill
+		if err := s.db.WithContext(ctx).Where("id = ?", waybillID).First(&waybill).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return nil, fmt.Errorf("waybill not found")
+			}
+			return nil, fmt.Errorf("query waybill error: %w", err)
 		}
-		return nil, fmt.Errorf("query waybill error: %w", err)
+		waybillNo = waybill.WaybillNo
+		vehicleID = waybill.VehicleID
+		driverID = waybill.DriverID
+
+		var vehicle model.Vehicle
+		s.db.WithContext(ctx).Where("id = ?", vehicleID).First(&vehicle)
+		plateNumber = vehicle.PlateNumber
+
+		var driver model.User
+		s.db.WithContext(ctx).Where("id = ?", driverID).First(&driver)
+		driverName = driver.RealName
 	}
 
-	var vehicle model.Vehicle
-	s.db.WithContext(ctx).Where("id = ?", waybill.VehicleID).First(&vehicle)
-	var driver model.User
-	s.db.WithContext(ctx).Where("id = ?", waybill.DriverID).First(&driver)
-
-	title := req.CustomTitle
-	content := req.CustomContent
-	pushPhase := model.PushPhase(req.PushPhase)
+	title := req.Title
+	content := req.Content
+	pushPhase := model.PushPhase(req.Phase)
 	if pushPhase == "" {
 		pushPhase = model.PushPhaseEnRoute
 	}
@@ -1336,30 +1587,56 @@ func (s *WeatherService) PushWeatherWarning(ctx context.Context, req *model.Weat
 		content = "前方路段有恶劣天气，请谨慎驾驶，注意安全。"
 	}
 
+	now := time.Now()
+	pushID := fmt.Sprintf("WX-PUSH-%s-%04d", now.Format("20060102-150405"), time.Now().UnixNano()%10000)
+
+	targetType := req.TargetType
+	if targetType == "" {
+		targetType = "waybill"
+	}
+
+	var targetIDs model.JSON
+	if len(req.TargetIDs) > 0 {
+		data, _ := json.Marshal(req.TargetIDs)
+		targetIDs = model.JSON(data)
+	}
+
 	record := &model.WeatherPushRecord{
-		WaybillID:       waybill.ID,
-		WaybillNo:       waybill.WaybillNo,
-		VehicleID:       waybill.VehicleID,
-		PlateNumber:     vehicle.PlateNumber,
-		DriverID:        waybill.DriverID,
-		DriverName:      driver.RealName,
+		PushID:          pushID,
+		PushPhase:       pushPhase,
 		WarningID:       warningID,
 		WarningNo:       warningNo,
 		WarningType:     wType,
 		WarningLevel:    wLevel,
-		PushPhase:       pushPhase,
-		MessageTitle:    title,
-		MessageContent:  content,
-		PushChannels:    model.JSON(`["app","sms"]`),
-		SpeedSuggestion: speedSuggestion,
+		Title:           title,
+		Content:         content,
+		TargetType:      targetType,
+		TargetIDs:       targetIDs,
+		WaybillID:       waybillID,
+		WaybillNo:       waybillNo,
+		VehicleID:       vehicleID,
+		PlateNumber:     plateNumber,
+		DriverID:        driverID,
+		DriverName:      driverName,
+		PushChannels:    model.JSON(`["app","push"]`),
+		Status:          "sent",
+		SuccessCount:    1,
+		FailCount:       0,
+		ReadCount:       0,
 		ReadStatus:      0,
+		SpeedSuggestion: speedSuggestion,
+		SegmentStartLat: req.SegmentStartLat,
+		SegmentStartLng: req.SegmentStartLng,
+		SegmentEndLat:   req.SegmentEndLat,
+		SegmentEndLng:   req.SegmentEndLng,
+		SentAt:          &now,
 	}
 
 	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
 		return nil, fmt.Errorf("create push record error: %w", err)
 	}
 
-	logger.Sugar.Infof("weather push sent: waybill=%s, driver=%s, title=%s", waybill.WaybillNo, driver.RealName, title)
+	logger.Sugar.Infof("weather push sent: push_id=%s, phase=%s, target_type=%s, title=%s", pushID, pushPhase, targetType, title)
 
 	return record, nil
 }
@@ -1403,69 +1680,390 @@ func (s *WeatherService) ListPushRecords(ctx context.Context, page, pageSize int
 	}, nil
 }
 
+func (s *WeatherService) GetDriverUnreadCount(ctx context.Context, driverID int64) (int64, error) {
+	if driverID <= 0 {
+		return 0, fmt.Errorf("invalid driver id")
+	}
+
+	var count int64
+	err := s.db.WithContext(ctx).Model(&model.WeatherPushRecord{}).
+		Where("driver_id = ? AND read_status = 0 AND status = ?", driverID, "sent").
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("count unread error: %w", err)
+	}
+	return count, nil
+}
+
+func (s *WeatherService) MarkPushRecordRead(ctx context.Context, pushID string, driverID int64) error {
+	if pushID == "" {
+		return fmt.Errorf("push id is required")
+	}
+
+	updates := map[string]interface{}{
+		"read_status": 1,
+		"read_time":   time.Now(),
+	}
+
+	query := s.db.WithContext(ctx).Model(&model.WeatherPushRecord{}).
+		Where("push_id = ?", pushID)
+	if driverID > 0 {
+		query = query.Where("driver_id = ?", driverID)
+	}
+
+	result := query.Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("mark read error: %w", result.Error)
+	}
+	if result.RowsAffected > 0 {
+		s.db.WithContext(ctx).Model(&model.WeatherPushRecord{}).
+			Where("push_id = ?", pushID).
+			UpdateColumn("read_count", gorm.Expr("read_count + 1"))
+	}
+	return nil
+}
+
+func (s *WeatherService) RespondToPushRecord(ctx context.Context, pushID string, driverID int64, response, note string) error {
+	if pushID == "" {
+		return fmt.Errorf("push id is required")
+	}
+	if response == "" {
+		return fmt.Errorf("response is required")
+	}
+
+	updates := map[string]interface{}{
+		"driver_response": response,
+		"response_time":   time.Now(),
+		"read_status":     1,
+	}
+	if note != "" {
+		updates["response_note"] = note
+	}
+
+	query := s.db.WithContext(ctx).Model(&model.WeatherPushRecord{}).
+		Where("push_id = ?", pushID)
+	if driverID > 0 {
+		query = query.Where("driver_id = ?", driverID)
+	}
+
+	if err := query.Updates(updates).Error; err != nil {
+		return fmt.Errorf("response error: %w", err)
+	}
+
+	logger.Sugar.Infof("driver responded to push: push_id=%s, driver_id=%d, response=%s", pushID, driverID, response)
+	return nil
+}
+
+func (s *WeatherService) PreDepartureWarning(ctx context.Context, waybillID int64) (*model.WeatherPushRecord, error) {
+	if waybillID <= 0 {
+		return nil, fmt.Errorf("invalid waybill id")
+	}
+
+	var waybill model.Waybill
+	if err := s.db.WithContext(ctx).Where("id = ?", waybillID).First(&waybill).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("waybill not found")
+		}
+		return nil, fmt.Errorf("query waybill error: %w", err)
+	}
+
+	if waybill.RoutePlanID <= 0 {
+		return nil, fmt.Errorf("waybill has no route plan")
+	}
+
+	analysis, err := s.AnalyzeRouteWeather(ctx, waybill.RoutePlanID)
+	if err != nil {
+		return nil, fmt.Errorf("analyze route weather error: %w", err)
+	}
+
+	if analysis.OverallRiskLevel == "low" {
+		return nil, nil
+	}
+
+	var warningID int64
+	var warningType, warningLevel string
+	if len(analysis.WarningsOnRoute) > 0 {
+		warningID = analysis.WarningsOnRoute[0].ID
+		warningType = string(analysis.WarningsOnRoute[0].WarningType)
+		warningLevel = string(analysis.WarningsOnRoute[0].WarningLevel)
+	}
+
+	riskLevelText := map[string]string{
+		"low":     "低风险",
+		"medium":  "中风险",
+		"high":    "高风险",
+		"extreme": "极高风险",
+	}[analysis.OverallRiskLevel]
+
+	title := fmt.Sprintf("【出发前提醒】路线天气%s预警", riskLevelText)
+
+	var contentBuilder strings.Builder
+	contentBuilder.WriteString(fmt.Sprintf("您的运单 %s 出发路线天气评估：%s\n\n", waybill.WaybillNo, riskLevelText))
+	contentBuilder.WriteString(fmt.Sprintf("· 总距离：%.1f公里\n", analysis.TotalDistance))
+	contentBuilder.WriteString(fmt.Sprintf("· 建议车速：%d km/h\n", analysis.SafeSpeed))
+	contentBuilder.WriteString(fmt.Sprintf("· 风险等级：%s\n\n", riskLevelText))
+
+	contentBuilder.WriteString("【预警路段】\n")
+	for i, sw := range analysis.SegmentWarnings {
+		if i >= 5 {
+			contentBuilder.WriteString(fmt.Sprintf("... 共%d段预警路段\n", len(analysis.SegmentWarnings)))
+			break
+		}
+		contentBuilder.WriteString(fmt.Sprintf("%d. 第%.1f公里处：%s%s，建议车速%dkm/h\n",
+			i+1, sw.Distance, sw.WarningType, sw.WarningLevel, sw.SpeedSuggestion))
+	}
+
+	contentBuilder.WriteString("\n【安全建议】\n")
+	for i, sug := range analysis.Suggestions {
+		if i >= 5 {
+			break
+		}
+		contentBuilder.WriteString(fmt.Sprintf("%d. %s\n", i+1, sug))
+	}
+
+	if analysis.ShouldDetour && analysis.DetourSuggestion != "" {
+		contentBuilder.WriteString(fmt.Sprintf("\n【绕行建议】%s\n", analysis.DetourSuggestion))
+	}
+
+	pushReq := &model.WeatherPushRequest{
+		Phase:      string(model.PushPhasePreDeparture),
+		WarningID:  &warningID,
+		TargetType: "waybill",
+		WaybillID:  &waybillID,
+		Title:      title,
+		Content:    contentBuilder.String(),
+	}
+
+	record, err := s.PushWeatherWarning(ctx, pushReq)
+	if err != nil {
+		return nil, fmt.Errorf("push pre-departure warning error: %w", err)
+	}
+
+	logger.Sugar.Infof("pre-departure warning sent: waybill=%s, risk_level=%s, push_id=%s",
+		waybill.WaybillNo, analysis.OverallRiskLevel, record.PushID)
+
+	return record, nil
+}
+
+func (s *WeatherService) EnRouteWarning(ctx context.Context, waybillID int64, currentLat, currentLng float64) (*model.WeatherPushRecord, error) {
+	if waybillID <= 0 {
+		return nil, fmt.Errorf("invalid waybill id")
+	}
+
+	var waybill model.Waybill
+	if err := s.db.WithContext(ctx).Where("id = ?", waybillID).First(&waybill).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("waybill not found")
+		}
+		return nil, fmt.Errorf("query waybill error: %w", err)
+	}
+
+	if waybill.RoutePlanID <= 0 {
+		return nil, fmt.Errorf("waybill has no route plan")
+	}
+
+	weatherPoints, err := s.GetRouteWeather(ctx, waybill.RoutePlanID)
+	if err != nil {
+		return nil, fmt.Errorf("get route weather error: %w", err)
+	}
+
+	var nearestPoint *model.RouteWeatherPoint
+	var minDistance float64 = -1
+	for _, p := range weatherPoints {
+		d := haversine(currentLat, currentLng, p.Lat, p.Lng)
+		if minDistance < 0 || d < minDistance {
+			minDistance = d
+			nearestPoint = p
+		}
+	}
+
+	if nearestPoint == nil {
+		return nil, nil
+	}
+
+	if !nearestPoint.HasWarning && nearestPoint.SpeedSuggestion >= 80 {
+		return nil, nil
+	}
+
+	lookAheadDistance := 10.0
+	var upcomingWarnings []*model.SegmentWarning
+	for i, p := range weatherPoints {
+		distFromCurrent := math.Abs(p.DistanceFromStart/1000 - nearestPoint.DistanceFromStart/1000)
+		if distFromCurrent <= lookAheadDistance && (p.HasWarning || p.SpeedSuggestion < 80) {
+			upcomingWarnings = append(upcomingWarnings, &model.SegmentWarning{
+				SegmentIndex:    i,
+				StartLat:        p.Lat,
+				StartLng:        p.Lng,
+				EndLat:          p.Lat,
+				EndLng:          p.Lng,
+				Distance:        p.DistanceFromStart / 1000,
+				WarningType:     p.WarningType,
+				WarningLevel:    p.WarningLevel,
+				SpeedSuggestion: p.SpeedSuggestion,
+				Description:     fmt.Sprintf("前方%.1f公里处有%s天气", distFromCurrent, p.WarningType),
+			})
+		}
+	}
+
+	if len(upcomingWarnings) == 0 {
+		return nil, nil
+	}
+
+	title := fmt.Sprintf("【行驶中提醒】前方%d公里处有天气预警", int(nearestPoint.DistanceFromStart/1000))
+
+	var contentBuilder strings.Builder
+	contentBuilder.WriteString(fmt.Sprintf("运单 %s 前方路段天气预警：\n\n", waybill.WaybillNo))
+	contentBuilder.WriteString(fmt.Sprintf("· 当前车速建议：%d km/h\n", nearestPoint.SpeedSuggestion))
+	contentBuilder.WriteString(fmt.Sprintf("· 预警类型：%s\n\n", nearestPoint.WarningType))
+
+	contentBuilder.WriteString("【前方预警路段】\n")
+	for i, w := range upcomingWarnings {
+		if i >= 5 {
+			break
+		}
+		contentBuilder.WriteString(fmt.Sprintf("%d. 距离%.1f公里：%s%s，建议车速%dkm/h\n",
+			i+1, w.Distance, w.WarningType, w.WarningLevel, w.SpeedSuggestion))
+	}
+
+	contentBuilder.WriteString("\n【安全提示】\n")
+	contentBuilder.WriteString("1. 请减速慢行，保持安全车距\n")
+	contentBuilder.WriteString("2. 注意路况变化，谨慎驾驶\n")
+	contentBuilder.WriteString("3. 如遇极端天气，请就近服务区停靠\n")
+	contentBuilder.WriteString("4. 紧急情况请联系调度中心\n")
+
+	firstWarning := upcomingWarnings[0]
+
+	pushReq := &model.WeatherPushRequest{
+		Phase:           string(model.PushPhaseEnRoute),
+		TargetType:      "waybill",
+		WaybillID:       &waybillID,
+		Title:           title,
+		Content:         contentBuilder.String(),
+		SegmentStartLat: nearestPoint.Lat,
+		SegmentStartLng: nearestPoint.Lng,
+		SegmentEndLat:   firstWarning.StartLat,
+		SegmentEndLng:   firstWarning.StartLng,
+	}
+
+	record, err := s.PushWeatherWarning(ctx, pushReq)
+	if err != nil {
+		return nil, fmt.Errorf("push en-route warning error: %w", err)
+	}
+
+	logger.Sugar.Infof("en-route warning sent: waybill=%s, warning_type=%s, push_id=%s",
+		waybill.WaybillNo, nearestPoint.WarningType, record.PushID)
+
+	return record, nil
+}
+
 func (s *WeatherService) TriggerOperationSuspend(ctx context.Context, req *model.OperationSuspendRequest, operatorID int64, operatorName string) (*model.OperationSuspension, error) {
 	if req.TriggerReason == "" {
 		return nil, fmt.Errorf("trigger reason is required")
 	}
+	if req.CenterLat == 0 || req.CenterLng == 0 {
+		return nil, fmt.Errorf("center lat/lng is required")
+	}
+	if req.RadiusKm <= 0 {
+		return nil, fmt.Errorf("radius km is required")
+	}
 
 	now := time.Now()
-	suspensionNo := fmt.Sprintf("OS%s", now.Format("20060102150405"))
+	suspensionNo := fmt.Sprintf("OPS-SUS-%s-%04d", now.Format("20060102-150405"), time.Now().UnixNano()%10000)
+
+	triggerType := req.TriggerType
+	if triggerType == "" {
+		triggerType = "manual"
+	}
+	autoTriggered := 0
+	if triggerType == "automatic" {
+		autoTriggered = 1
+	}
 
 	suspension := &model.OperationSuspension{
-		SuspensionNo:    suspensionNo,
-		TriggerType:     "weather",
-		TriggerReason:   req.TriggerReason,
-		AreaScope:       req.AreaScope,
-		Status:          "suspended",
-		SuspendTime:     &now,
-		OperatorID:      operatorID,
-		OperatorName:    operatorName,
-		AutoTriggered:   boolToInt(req.AutoTriggered),
-		Remark:          req.Remark,
+		SuspensionNo:       suspensionNo,
+		TriggerType:        triggerType,
+		TriggerReason:      req.TriggerReason,
+		WeatherType:        req.WeatherType,
+		Visibility:         req.Visibility,
+		WindSpeed:          req.WindSpeed,
+		AffectedRegion:     req.AffectedRegion,
+		CenterLat:          req.CenterLat,
+		CenterLng:          req.CenterLng,
+		RadiusKm:           req.RadiusKm,
+		Status:             "active",
+		SuggestedSpeed:     req.SuggestedSpeed,
+		SuspendTime:        &now,
+		OperatorID:         operatorID,
+		OperatorName:       operatorName,
+		CreatedBy:          operatorID,
+		AutoTriggered:      autoTriggered,
+		Remark:             req.Remark,
+	}
+
+	if req.ExpiresAt != "" {
+		expireTime, err := time.Parse(time.RFC3339, req.ExpiresAt)
+		if err == nil {
+			suspension.ExpiresAt = &expireTime
+		}
+	} else {
+		expireTime := now.Add(24 * time.Hour)
+		suspension.ExpiresAt = &expireTime
 	}
 
 	if req.TriggerWarningID != nil && *req.TriggerWarningID > 0 {
 		warning, err := s.GetWarning(ctx, *req.TriggerWarningID)
 		if err == nil {
 			suspension.TriggerWarningID = warning.ID
-			suspension.TriggerLat = warning.CenterLat
-			suspension.TriggerLng = warning.CenterLng
+			if suspension.CenterLat == 0 {
+				suspension.CenterLat = warning.CenterLat
+			}
+			if suspension.CenterLng == 0 {
+				suspension.CenterLng = warning.CenterLng
+			}
 		}
 	}
 
-	if len(req.Provinces) > 0 {
-		provincesJSON, _ := json.Marshal(req.Provinces)
-		suspension.AffectedProvinces = model.JSON(provincesJSON)
+	if len(req.TargetVehicleIDs) > 0 {
+		vehicleIDsJSON, _ := json.Marshal(req.TargetVehicleIDs)
+		suspension.AffectedVehicleIDs = model.JSON(vehicleIDsJSON)
+		suspension.SuspendedVehicleCount = len(req.TargetVehicleIDs)
 	}
-	if len(req.Cities) > 0 {
-		citiesJSON, _ := json.Marshal(req.Cities)
-		suspension.AffectedCities = model.JSON(citiesJSON)
+	if len(req.TargetWaybillIDs) > 0 {
+		waybillIDsJSON, _ := json.Marshal(req.TargetWaybillIDs)
+		suspension.AffectedWaybillIDs = model.JSON(waybillIDsJSON)
+		suspension.SuspendedWaybillCount = len(req.TargetWaybillIDs)
 	}
 
-	var suspendedCount int64
-	waybillQuery := s.db.WithContext(ctx).Model(&model.Waybill{}).
-		Where("status IN (?, ?, ?)", "assigned", "loading", "in_transit")
-	if len(req.Provinces) > 0 || len(req.Cities) > 0 {
-		waybillQuery = waybillQuery.Joins("JOIN vehicles ON waybills.vehicle_id = vehicles.id").
-			Joins("JOIN users ON waybills.driver_id = users.id")
-	}
-	waybillQuery.Count(&suspendedCount)
-	suspension.SuspendedWaybillCount = int(suspendedCount)
+	if len(req.TargetVehicleIDs) == 0 && len(req.TargetWaybillIDs) == 0 {
+		var vehicleCount int64
+		s.db.WithContext(ctx).Model(&model.Vehicle{}).Where("status = ?", "running").Count(&vehicleCount)
+		suspension.SuspendedVehicleCount = int(vehicleCount)
 
-	var vehicleCount int64
-	s.db.WithContext(ctx).Model(&model.Vehicle{}).Where("status = ?", "running").Count(&vehicleCount)
-	suspension.SuspendedVehicleCount = int(vehicleCount)
+		var waybillCount int64
+		s.db.WithContext(ctx).Model(&model.Waybill{}).
+			Where("status IN (?, ?, ?)", "assigned", "loading", "in_transit").
+			Count(&waybillCount)
+		suspension.SuspendedWaybillCount = int(waybillCount)
+	}
 
 	if err := s.db.WithContext(ctx).Create(suspension).Error; err != nil {
 		return nil, fmt.Errorf("create suspension error: %w", err)
 	}
 
-	s.db.WithContext(ctx).Model(&model.Vehicle{}).
-		Where("status = ?", "running").
-		Update("status", "offline")
+	if len(req.TargetVehicleIDs) == 0 {
+		s.db.WithContext(ctx).Model(&model.Vehicle{}).
+			Where("status = ?", "running").
+			Update("status", "offline")
+	} else {
+		s.db.WithContext(ctx).Model(&model.Vehicle{}).
+			Where("id IN ?", req.TargetVehicleIDs).
+			Where("status = ?", "running").
+			Update("status", "offline")
+	}
 
-	logger.Sugar.Warnf("operation suspended: no=%s, reason=%s, waybills=%d, vehicles=%d, auto=%v",
-		suspensionNo, req.TriggerReason, suspendedCount, vehicleCount, req.AutoTriggered)
+	logger.Sugar.Warnf("operation suspended: no=%s, type=%s, reason=%s, vehicles=%d, waybills=%d, auto=%v",
+		suspensionNo, triggerType, req.TriggerReason,
+		suspension.SuspendedVehicleCount, suspension.SuspendedWaybillCount, autoTriggered == 1)
 
 	return suspension, nil
 }
@@ -1483,34 +2081,48 @@ func (s *WeatherService) ResumeOperation(ctx context.Context, req *model.Operati
 		return nil, fmt.Errorf("query suspension error: %w", err)
 	}
 
-	if suspension.Status != "suspended" {
-		return nil, fmt.Errorf("suspension is not in suspended status")
+	if suspension.Status != "active" {
+		return nil, fmt.Errorf("suspension is not active")
 	}
 
 	now := time.Now()
 	updates := map[string]interface{}{
-		"status":              "resumed",
-		"resume_time":         &now,
-		"resume_reason":       req.ResumeReason,
-		"resume_operator_id":  operatorID,
-		"resume_operator_name": operatorName,
-		"updated_at":          now,
+		"status":       "lifted",
+		"lifted_at":    &now,
+		"lifted_by":    operatorID,
+		"lift_reason":  req.LiftReason,
+		"resume_time":  &now,
+		"updated_at":   now,
 	}
 
 	if err := s.db.WithContext(ctx).Model(&suspension).Updates(updates).Error; err != nil {
 		return nil, fmt.Errorf("update suspension error: %w", err)
 	}
 
-	s.db.WithContext(ctx).Model(&model.Vehicle{}).
-		Where("status = ?", "offline").
-		Update("status", "idle")
+	var vehicleIDs []int64
+	if len(suspension.AffectedVehicleIDs) > 0 {
+		json.Unmarshal(suspension.AffectedVehicleIDs, &vehicleIDs)
+	}
+
+	if len(vehicleIDs) > 0 {
+		s.db.WithContext(ctx).Model(&model.Vehicle{}).
+			Where("id IN ?", vehicleIDs).
+			Where("status = ?", "offline").
+			Update("status", "idle")
+	} else {
+		s.db.WithContext(ctx).Model(&model.Vehicle{}).
+			Where("status = ?", "offline").
+			Update("status", "idle")
+	}
 
 	logger.Sugar.Infof("operation resumed: no=%s, reason=%s, operator=%s",
-		suspension.SuspensionNo, req.ResumeReason, operatorName)
+		suspension.SuspensionNo, req.LiftReason, operatorName)
 
-	suspension.Status = "resumed"
+	suspension.Status = "lifted"
+	suspension.LiftedAt = &now
+	suspension.LiftedBy = operatorID
+	suspension.LiftReason = req.LiftReason
 	suspension.ResumeTime = &now
-	suspension.ResumeReason = req.ResumeReason
 
 	return &suspension, nil
 }
@@ -1551,7 +2163,7 @@ func (s *WeatherService) ListSuspensions(ctx context.Context, page, pageSize int
 func (s *WeatherService) GetCurrentSuspension(ctx context.Context) (*model.OperationSuspension, error) {
 	var suspension model.OperationSuspension
 	if err := s.db.WithContext(ctx).
-		Where("status = ?", "suspended").
+		Where("status = ?", "active").
 		Order("created_at DESC").
 		First(&suspension).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {

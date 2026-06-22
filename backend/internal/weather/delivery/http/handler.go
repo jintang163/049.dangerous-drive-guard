@@ -44,6 +44,16 @@ func (h *WeatherHandler) RegisterRoutes(r *app.RouterGroup, authMiddleware app.H
 		weather.POST("/operation/resume", h.ResumeOperation)
 		weather.GET("/operation/suspensions", h.ListSuspensions)
 		weather.GET("/operation/current-suspension", h.GetCurrentSuspension)
+		weather.POST("/operation/auto-check", h.AutoCheckSuspend)
+
+		driver := weather.Group("/driver")
+		{
+			driver.GET("/unread-count", h.GetDriverUnreadCount)
+			driver.POST("/push/:id/read", h.MarkPushRead)
+			driver.POST("/push/:id/respond", h.RespondToPush)
+			driver.POST("/pre-departure", h.PreDepartureWarning)
+			driver.POST("/en-route", h.EnRouteWarning)
+		}
 	}
 }
 
@@ -307,9 +317,9 @@ func (h *WeatherHandler) PushWeatherWarning(c context.Context, ctx *app.RequestC
 
 	response.Success(ctx, map[string]interface{}{
 		"success":      true,
-		"push_id":      record.WarningNo,
-		"sent_count":   1,
-		"failed_count": 0,
+		"push_id":      record.PushID,
+		"sent_count":   record.SuccessCount,
+		"failed_count": record.FailCount,
 	})
 }
 
@@ -416,4 +426,144 @@ func (h *WeatherHandler) GetCurrentSuspension(c context.Context, ctx *app.Reques
 	}
 
 	response.Success(ctx, suspension)
+}
+
+func (h *WeatherHandler) AutoCheckSuspend(c context.Context, ctx *app.RequestContext) {
+	triggered, suspension, err := h.weatherService.CheckAndAutoSuspend(c)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, map[string]interface{}{
+		"triggered":  triggered,
+		"suspension": suspension,
+	})
+}
+
+func (h *WeatherHandler) GetDriverUnreadCount(c context.Context, ctx *app.RequestContext) {
+	driverIDStr := ctx.Query("driver_id")
+	if driverIDStr == "" {
+		response.BadRequest(ctx, "driver_id is required")
+		return
+	}
+
+	driverID, err := strconv.ParseInt(driverIDStr, 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid driver_id")
+		return
+	}
+
+	count, err := h.weatherService.GetDriverUnreadCount(c, driverID)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, map[string]interface{}{
+		"unread_count": count,
+	})
+}
+
+func (h *WeatherHandler) MarkPushRead(c context.Context, ctx *app.RequestContext) {
+	pushID := ctx.Param("id")
+	if pushID == "" {
+		response.BadRequest(ctx, "push id is required")
+		return
+	}
+
+	driverIDStr := ctx.Query("driver_id")
+	driverID := int64(0)
+	if driverIDStr != "" {
+		driverID, _ = strconv.ParseInt(driverIDStr, 10, 64)
+	}
+
+	if err := h.weatherService.MarkPushRecordRead(c, pushID, driverID); err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, nil)
+}
+
+func (h *WeatherHandler) RespondToPush(c context.Context, ctx *app.RequestContext) {
+	pushID := ctx.Param("id")
+	if pushID == "" {
+		response.BadRequest(ctx, "push id is required")
+		return
+	}
+
+	var req struct {
+		DriverID int64  `json:"driver_id"`
+		Response string `json:"response"`
+		Note     string `json:"note"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, "invalid request body")
+		return
+	}
+
+	if req.Response == "" {
+		response.BadRequest(ctx, "response is required")
+		return
+	}
+
+	if err := h.weatherService.RespondToPushRecord(c, pushID, req.DriverID, req.Response, req.Note); err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, nil)
+}
+
+func (h *WeatherHandler) PreDepartureWarning(c context.Context, ctx *app.RequestContext) {
+	var req struct {
+		WaybillID int64 `json:"waybill_id"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, "invalid request body")
+		return
+	}
+
+	if req.WaybillID <= 0 {
+		response.BadRequest(ctx, "waybill_id is required")
+		return
+	}
+
+	record, err := h.weatherService.PreDepartureWarning(c, req.WaybillID)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, record)
+}
+
+func (h *WeatherHandler) EnRouteWarning(c context.Context, ctx *app.RequestContext) {
+	var req struct {
+		WaybillID   int64   `json:"waybill_id"`
+		CurrentLat  float64 `json:"current_lat"`
+		CurrentLng  float64 `json:"current_lng"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, "invalid request body")
+		return
+	}
+
+	if req.WaybillID <= 0 {
+		response.BadRequest(ctx, "waybill_id is required")
+		return
+	}
+	if req.CurrentLat == 0 || req.CurrentLng == 0 {
+		response.BadRequest(ctx, "current location is required")
+		return
+	}
+
+	record, err := h.weatherService.EnRouteWarning(c, req.WaybillID, req.CurrentLat, req.CurrentLng)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, record)
 }
