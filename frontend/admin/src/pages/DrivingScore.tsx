@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import {
   Row,
   Col,
@@ -25,6 +25,7 @@ import {
   Modal,
   Input,
   InputNumber,
+  Alert,
 } from 'antd'
 import {
   TrophyOutlined,
@@ -44,15 +45,15 @@ import {
   GiftOutlined,
   EyeOutlined,
   ReloadOutlined,
+  LockOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import dayjs from 'dayjs'
 import { scoreApi, ScoreOverview, ScoreLeaderboardItem, DrivingScoreRecord, ScoreBonus, MonthlyReport, RetrainingTask } from '@/services/api'
-import { hasPermission } from '@/utils/auth'
+import { hasPermission, getUserInfo } from '@/utils/auth'
 
 const { Title, Text } = Typography
 const { Option } = Select
-const { RangePicker } = DatePicker
 
 const scoreLevelMap: Record<string, { label: string; color: string }> = {
   excellent: { label: '优秀', color: '#52c41a' },
@@ -88,141 +89,160 @@ const triggerTypeMap: Record<string, string> = {
   repeated_violation: '多次违规',
 }
 
-const mockOverview: ScoreOverview = {
-  total_drivers: 40,
-  excellent_count: 15,
-  good_count: 12,
-  normal_count: 7,
-  poor_count: 4,
-  danger_count: 2,
-  avg_score: 82.5,
-  retraining_count: 3,
-  today_calculated: 38,
-  need_retraining_count: 3,
+const defaultOverview: ScoreOverview = {
+  total_drivers: 0,
+  excellent_count: 0,
+  good_count: 0,
+  normal_count: 0,
+  poor_count: 0,
+  danger_count: 0,
+  avg_score: 0,
+  retraining_count: 0,
+  today_calculated: 0,
+  need_retraining_count: 0,
 }
-
-const mockLeaderboard: ScoreLeaderboardItem[] = Array.from({ length: 20 }, (_, i) => ({
-  driver_id: i + 1,
-  driver_name: ['张建国', '李志强', '王海军', '赵卫东', '陈光明', '刘振华', '杨大勇', '黄伟峰', '周明辉', '吴建军', '郑海涛', '孙文博', '马俊杰', '朱永刚', '胡德明', '林国安', '何建设', '罗正阳', '谢天佑', '邓伟才'][i],
-  plate_number: `京A${(10000 + i).toString().padStart(5, '0')}`,
-  total_score: Math.max(45, 100 - i * 3 - Math.floor(Math.random() * 5)),
-  score_level: i < 5 ? 'excellent' : i < 12 ? 'good' : i < 17 ? 'normal' : i < 19 ? 'poor' : 'danger',
-  rank: i + 1,
-  avg_score_30d: Math.max(48, 98 - i * 2.5 - Math.floor(Math.random() * 3)),
-  bonus_points: i < 5 ? 5 : i < 10 ? 2 : 0,
-  org_name: '危险品运输示范企业',
-}))
-
-const mockDriverScore: DrivingScoreRecord = {
-  id: 1,
-  driver_id: 1,
-  waybill_id: null,
-  vehicle_id: 1,
-  trip_date: dayjs().format('YYYY-MM-DD'),
-  total_score: 88,
-  score_level: 'good',
-  fatigue_score: 92,
-  fatigue_deduction: 3,
-  overspeed_score: 90,
-  overspeed_count: 1,
-  overspeed_deduction: 2,
-  sudden_brake_count: 2,
-  sudden_brake_deduction: 2,
-  sudden_accel_count: 1,
-  sudden_accel_deduction: 1,
-  sharp_turn_count: 0,
-  sharp_turn_deduction: 0,
-  lane_deviation_count: 1,
-  lane_deviation_deduction: 1,
-  phone_usage_count: 0,
-  phone_usage_deduction: 0,
-  smoking_count: 0,
-  smoking_deduction: 0,
-  seatbelt_violation_count: 0,
-  seatbelt_violation_deduction: 0,
-  route_deviation_count: 0,
-  route_deviation_deduction: 0,
-  fatigue_alarm_count: 1,
-  total_distance: 256.8,
-  driving_duration: 320,
-  night_driving_duration: 45,
-  overspeed_duration: 3.5,
-}
-
-const mockHistory: DrivingScoreRecord[] = Array.from({ length: 30 }, (_, i) => ({
-  ...mockDriverScore,
-  id: i + 1,
-  trip_date: dayjs().subtract(29 - i, 'day').format('YYYY-MM-DD'),
-  total_score: Math.max(65, 88 - Math.floor(Math.random() * 15) + Math.floor(Math.random() * 10)),
-  fatigue_alarm_count: Math.floor(Math.random() * 3),
-  overspeed_count: Math.floor(Math.random() * 2),
-  sudden_brake_count: Math.floor(Math.random() * 3),
-  sudden_accel_count: Math.floor(Math.random() * 2),
-  sharp_turn_count: Math.floor(Math.random() * 2),
-}))
-
-const mockBonuses: ScoreBonus[] = [
-  { id: 1, driver_id: 1, bonus_type: 'no_violation_30d', bonus_points: 5, reason: '连续30天无违规，奖励加分', streak_days: 30, start_date: dayjs().subtract(30, 'day').format('YYYY-MM-DD'), end_date: dayjs().format('YYYY-MM-DD'), awarded_by: 0, status: 1, created_at: dayjs().format('YYYY-MM-DD HH:mm:ss') },
-]
-
-const mockMonthlyReports: MonthlyReport[] = Array.from({ length: 10 }, (_, i) => ({
-  id: i + 1,
-  driver_id: i + 1,
-  report_month: dayjs().format('YYYY-MM'),
-  avg_score: Math.max(50, 90 - i * 4 + Math.floor(Math.random() * 5)),
-  min_score: Math.max(40, 70 - i * 3),
-  max_score: Math.min(100, 95 - i),
-  total_fatigue_alarms: Math.floor(Math.random() * 8),
-  total_sudden_events: Math.floor(Math.random() * 12),
-  total_overspeed_duration: Math.floor(Math.random() * 30),
-  total_distance: 2000 + Math.floor(Math.random() * 5000),
-  total_driving_duration: 4000 + Math.floor(Math.random() * 8000),
-  total_bonus_points: i < 3 ? 5 : 0,
-  violation_days: Math.floor(Math.random() * 5),
-  clean_days: 25 - Math.floor(Math.random() * 5),
-  score_trend: Array.from({ length: 30 }, (_, di) => ({
-    date: dayjs().subtract(29 - di, 'day').format('MM-DD'),
-    score: Math.max(50, 85 - i * 2 + Math.floor(Math.random() * 15)),
-  })),
-  need_retraining: i >= 7 ? 1 : 0,
-  retraining_triggered_at: i >= 7 ? dayjs().format('YYYY-MM-DD HH:mm:ss') : null,
-  report_sent: i < 5 ? 1 : 0,
-  report_sent_at: i < 5 ? dayjs().subtract(i, 'day').format('YYYY-MM-DD HH:mm:ss') : null,
-}))
-
-const mockRetrainingTasks: RetrainingTask[] = [
-  { id: 1, driver_id: 18, trigger_score: 52, trigger_type: 'low_score', trigger_month: dayjs().format('YYYY-MM'), task_type: 'safety_training', status: 'pending', assigned_at: null, started_at: null, completed_at: null, result_score: null, result_note: null, created_by: 0, created_at: dayjs().subtract(2, 'day').format('YYYY-MM-DD HH:mm:ss') },
-  { id: 2, driver_id: 19, trigger_score: 48, trigger_type: 'low_score', trigger_month: dayjs().format('YYYY-MM'), task_type: 'rule_exam', status: 'in_progress', assigned_at: dayjs().subtract(1, 'day').format('YYYY-MM-DD HH:mm:ss'), started_at: dayjs().subtract(1, 'day').format('YYYY-MM-DD HH:mm:ss'), completed_at: null, result_score: null, result_note: null, created_by: 0, created_at: dayjs().subtract(3, 'day').format('YYYY-MM-DD HH:mm:ss') },
-  { id: 3, driver_id: 20, trigger_score: 55, trigger_type: 'repeated_violation', trigger_month: dayjs().subtract(1, 'month').format('YYYY-MM'), task_type: 'mentor_drive', status: 'completed', assigned_at: dayjs().subtract(10, 'day').format('YYYY-MM-DD HH:mm:ss'), started_at: dayjs().subtract(9, 'day').format('YYYY-MM-DD HH:mm:ss'), completed_at: dayjs().subtract(2, 'day').format('YYYY-MM-DD HH:mm:ss'), result_score: 82, result_note: '培训考核通过', created_by: 0, created_at: dayjs().subtract(12, 'day').format('YYYY-MM-DD HH:mm:ss') },
-]
 
 const DrivingScore: React.FC = () => {
   const [loading, setLoading] = useState(true)
-  const [overview, setOverview] = useState<ScoreOverview>(mockOverview)
-  const [leaderboard, setLeaderboard] = useState<ScoreLeaderboardItem[]>(mockLeaderboard)
+  const [overview, setOverview] = useState<ScoreOverview>(defaultOverview)
+  const [leaderboard, setLeaderboard] = useState<ScoreLeaderboardItem[]>([])
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false)
   const [detailDrawer, setDetailDrawer] = useState<ScoreLeaderboardItem | null>(null)
   const [driverScoreData, setDriverScoreData] = useState<{ latest: DrivingScoreRecord; history: DrivingScoreRecord[] } | null>(null)
+  const [driverScoreLoading, setDriverScoreLoading] = useState(false)
   const [driverBonuses, setDriverBonuses] = useState<ScoreBonus[]>([])
-  const [monthlyReports, setMonthlyReports] = useState<MonthlyReport[]>(mockMonthlyReports)
-  const [retrainingTasks, setRetrainingTasks] = useState<RetrainingTask[]>(mockRetrainingTasks)
+  const [monthlyReports, setMonthlyReports] = useState<MonthlyReport[]>([])
+  const [monthlyReportsLoading, setMonthlyReportsLoading] = useState(false)
+  const [retrainingTasks, setRetrainingTasks] = useState<RetrainingTask[]>([])
+  const [retrainingLoading, setRetrainingLoading] = useState(false)
   const [reportMonth, setReportMonth] = useState(dayjs().format('YYYY-MM'))
-  const isAdmin = hasPermission('score:manage')
+  const [orderBy, setOrderBy] = useState('total_score')
+  const isAdmin = hasPermission('admin') || hasPermission('score:manage')
+  const currentUser = getUserInfo()
 
-  useEffect(() => {
-    setLoading(true)
-    setTimeout(() => {
-      setOverview(mockOverview)
-      setLeaderboard(mockLeaderboard)
-      setMonthlyReports(mockMonthlyReports)
-      setRetrainingTasks(mockRetrainingTasks)
-      setLoading(false)
-    }, 500)
+  const fetchOverview = useCallback(async () => {
+    try {
+      const res = await scoreApi.getOverview()
+      setOverview(res)
+    } catch (e) {
+      message.error('获取评分概览失败')
+    }
   }, [])
 
-  const handleViewDetail = (item: ScoreLeaderboardItem) => {
+  const fetchLeaderboard = useCallback(async () => {
+    if (!isAdmin) return
+    setLeaderboardLoading(true)
+    try {
+      const res = await scoreApi.getLeaderboard({ top: 20, order_by: orderBy })
+      setLeaderboard(res)
+    } catch (e) {
+      message.error('获取排行榜失败')
+    } finally {
+      setLeaderboardLoading(false)
+    }
+  }, [isAdmin, orderBy])
+
+  const fetchMonthlyReports = useCallback(async () => {
+    if (!isAdmin) return
+    setMonthlyReportsLoading(true)
+    try {
+      const res = await scoreApi.listMonthlyReports({ month: reportMonth, page: 1, page_size: 20 })
+      setMonthlyReports(res.list || [])
+    } catch (e) {
+      message.error('获取月报列表失败')
+    } finally {
+      setMonthlyReportsLoading(false)
+    }
+  }, [isAdmin, reportMonth])
+
+  const fetchRetrainingTasks = useCallback(async () => {
+    if (!isAdmin) return
+    setRetrainingLoading(true)
+    try {
+      const res = await scoreApi.listRetrainingTasks({ page: 1, page_size: 20 })
+      setRetrainingTasks(res.list || [])
+    } catch (e) {
+      message.error('获取再培训任务失败')
+    } finally {
+      setRetrainingLoading(false)
+    }
+  }, [isAdmin])
+
+  useEffect(() => {
+    const init = async () => {
+      setLoading(true)
+      await fetchOverview()
+      setLoading(false)
+    }
+    init()
+  }, [fetchOverview])
+
+  useEffect(() => {
+    if (isAdmin) {
+      fetchLeaderboard()
+      fetchMonthlyReports()
+      fetchRetrainingTasks()
+    }
+  }, [isAdmin, fetchLeaderboard, fetchMonthlyReports, fetchRetrainingTasks])
+
+  const handleViewDetail = async (item: ScoreLeaderboardItem) => {
     setDetailDrawer(item)
-    setDriverScoreData({ latest: { ...mockDriverScore, driver_id: item.driver_id, total_score: item.total_score, score_level: item.score_level }, history: mockHistory.map(h => ({ ...h, driver_id: item.driver_id })) })
-    setDriverBonuses(item.bonus_points > 0 ? mockBonuses : [])
+    setDriverScoreLoading(true)
+    try {
+      const scoreRes = await scoreApi.getDriverScore(item.driver_id, { days: 30 })
+      setDriverScoreData(scoreRes)
+      const bonusRes = await scoreApi.getDriverBonuses(item.driver_id)
+      setDriverBonuses(bonusRes)
+    } catch (e) {
+      message.error('获取驾驶员评分详情失败')
+    } finally {
+      setDriverScoreLoading(false)
+    }
+  }
+
+  const handleCheckBonus = async (driverId: number) => {
+    try {
+      const res = await scoreApi.checkBonus(driverId)
+      if (res.awarded) {
+        message.success(`获得加分：+${res.bonus?.bonus_points}分`)
+        const bonusRes = await scoreApi.getDriverBonuses(driverId)
+        setDriverBonuses(bonusRes)
+      } else {
+        message.info(res.message || '未达到连续30天无违规标准')
+      }
+    } catch (e) {
+      message.error('检查加分资格失败')
+    }
+  }
+
+  const handleSendReport = async (reportId: number) => {
+    try {
+      await scoreApi.sendMonthlyReport(reportId)
+      message.success('月报已推送至司机和管理员邮箱')
+      fetchMonthlyReports()
+    } catch (e) {
+      message.error('推送月报失败')
+    }
+  }
+
+  const handleBatchSend = async () => {
+    try {
+      const res = await scoreApi.batchSendMonthlyReports({ month: reportMonth })
+      message.success(`批量推送完成：成功 ${res.sent} 封，失败 ${res.failed} 封`)
+      fetchMonthlyReports()
+    } catch (e) {
+      message.error('批量推送月报失败')
+    }
+  }
+
+  const handleUpdateRetraining = async (taskId: number, status: string) => {
+    try {
+      await scoreApi.updateRetrainingTask(taskId, { status })
+      message.success(status === 'in_progress' ? '已开始培训' : '培训已完成')
+      fetchRetrainingTasks()
+    } catch (e) {
+      message.error('更新培训状态失败')
+    }
   }
 
   const scoreTrendChart = useMemo(() => {
@@ -454,9 +474,7 @@ const DrivingScore: React.FC = () => {
           size="small"
           icon={<SendOutlined />}
           disabled={r.report_sent === 1}
-          onClick={() => {
-            message.success('月报已推送至司机和管理员邮箱')
-          }}
+          onClick={() => handleSendReport(r.id)}
         >
           推送
         </Button>
@@ -512,10 +530,10 @@ const DrivingScore: React.FC = () => {
       render: (_: any, r: RetrainingTask) => (
         <Space size={4}>
           {r.status === 'pending' && (
-            <Button type="link" size="small" onClick={() => message.success('已开始培训')}>开始</Button>
+            <Button type="link" size="small" onClick={() => handleUpdateRetraining(r.id, 'in_progress')}>开始</Button>
           )}
           {r.status === 'in_progress' && (
-            <Button type="link" size="small" onClick={() => message.success('培训已完成')}>完成</Button>
+            <Button type="link" size="small" onClick={() => handleUpdateRetraining(r.id, 'completed')}>完成</Button>
           )}
         </Space>
       ),
@@ -610,38 +628,43 @@ const DrivingScore: React.FC = () => {
       </Row>
 
       <Row gutter={16}>
-        <Col xs={24} lg={14}>
-          <Card
-            bordered={false}
-            style={{ borderRadius: 12 }}
-            title={
-              <Space>
-                <TrophyOutlined style={{ color: '#faad14' }} />
-                <Text strong style={{ fontSize: 15 }}>评分排行榜</Text>
-                <Tag color="blue" style={{ margin: 0 }}>车队内排名</Tag>
-              </Space>
-            }
-            extra={
-              <Space>
-                <Select defaultValue="total_score" style={{ width: 120 }} size="small">
-                  <Option value="total_score">按今日分</Option>
-                  <Option value="avg_score_30d">按30日均</Option>
-                </Select>
-                <Button icon={<ReloadOutlined />} size="small">刷新</Button>
-              </Space>
-            }
-          >
-            <Table
-              rowKey="driver_id"
-              columns={leaderboardColumns}
-              dataSource={leaderboard}
-              pagination={{ pageSize: 10, showTotal: t => `共 ${t} 人` }}
-              size="small"
-              scroll={{ y: 420 }}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} lg={10} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {isAdmin && (
+          <Col xs={24} lg={14}>
+            <Card
+              bordered={false}
+              style={{ borderRadius: 12 }}
+              title={
+                <Space>
+                  <TrophyOutlined style={{ color: '#faad14' }} />
+                  <Text strong style={{ fontSize: 15 }}>评分排行榜</Text>
+                  <Tag color="blue" style={{ margin: 0 }}>车队内排名</Tag>
+                  <Tag color="red" style={{ margin: 0 }} icon={<LockOutlined />}>仅管理员可见</Tag>
+                </Space>
+              }
+              extra={
+                <Space>
+                  <Select value={orderBy} style={{ width: 120 }} size="small" onChange={v => setOrderBy(v)}>
+                    <Option value="total_score">按今日分</Option>
+                    <Option value="avg_score_30d">按30日均</Option>
+                  </Select>
+                  <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchLeaderboard()}>刷新</Button>
+                </Space>
+              }
+            >
+              <Table
+                rowKey="driver_id"
+                columns={leaderboardColumns}
+                dataSource={leaderboard}
+                loading={leaderboardLoading}
+                pagination={{ pageSize: 10, showTotal: t => `共 ${t} 人` }}
+                size="small"
+                scroll={{ y: 420 }}
+                locale={{ emptyText: <Empty description="暂无评分数据" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+              />
+            </Card>
+          </Col>
+        )}
+        <Col xs={24} lg={isAdmin ? 10 : 24} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card
             bordered={false}
             style={{ borderRadius: 12 }}
@@ -680,74 +703,81 @@ const DrivingScore: React.FC = () => {
         </Col>
       </Row>
 
-      <Card bordered={false} style={{ borderRadius: 12 }}>
-        <Tabs
-          defaultActiveKey="monthly"
-          items={[
-            {
-              key: 'monthly',
-              label: <Space><ClockCircleOutlined /> 评分月报</Space>,
-              children: (
-                <div>
-                  <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Space>
-                      <Text type="secondary">选择月份：</Text>
-                      <DatePicker
-                        picker="month"
-                        defaultValue={dayjs()}
-                        onChange={d => setReportMonth(d?.format('YYYY-MM') || dayjs().format('YYYY-MM'))}
-                        allowClear={false}
-                      />
-                      <Button
-                        type="primary"
-                        icon={<SendOutlined />}
-                        onClick={() => message.success('所有未推送月报已推送至司机和管理员邮箱')}
-                      >
-                        批量推送月报
-                      </Button>
-                    </Space>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      月均分低于60分自动触发再培训任务
-                    </Text>
+      {isAdmin && (
+        <Card bordered={false} style={{ borderRadius: 12 }}>
+          <Tabs
+            defaultActiveKey="monthly"
+            items={[
+              {
+                key: 'monthly',
+                label: <Space><ClockCircleOutlined /> 评分月报</Space>,
+                children: (
+                  <div>
+                    <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Space>
+                        <Text type="secondary">选择月份：</Text>
+                        <DatePicker
+                          picker="month"
+                          defaultValue={dayjs()}
+                          onChange={d => setReportMonth(d?.format('YYYY-MM') || dayjs().format('YYYY-MM'))}
+                          allowClear={false}
+                        />
+                        <Button
+                          type="primary"
+                          icon={<SendOutlined />}
+                          onClick={handleBatchSend}
+                        >
+                          批量推送月报
+                        </Button>
+                      </Space>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        月均分低于60分自动触发再培训任务
+                      </Text>
+                    </div>
+                    <Table
+                      rowKey="id"
+                      columns={monthlyReportColumns}
+                      dataSource={monthlyReports}
+                      loading={monthlyReportsLoading}
+                      pagination={{ pageSize: 10, showTotal: t => `共 ${t} 条` }}
+                      size="small"
+                      locale={{ emptyText: <Empty description="暂无月报数据" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+                    />
                   </div>
-                  <Table
-                    rowKey="id"
-                    columns={monthlyReportColumns}
-                    dataSource={monthlyReports}
-                    pagination={{ pageSize: 10, showTotal: t => `共 ${t} 条` }}
-                    size="small"
-                  />
-                </div>
-              ),
-            },
-            {
-              key: 'retraining',
-              label: <Space><ExclamationCircleOutlined /> 再培训任务</Space>,
-              children: (
-                <div>
-                  <div style={{ marginBottom: 16 }}>
-                    <Space>
-                      <Text type="secondary">状态筛选：</Text>
-                      <Select defaultValue="" style={{ width: 120 }} allowClear placeholder="全部状态">
-                        <Option value="pending">待培训</Option>
-                        <Option value="in_progress">培训中</Option>
-                        <Option value="completed">已完成</Option>
-                      </Select>
-                    </Space>
+                ),
+              },
+              {
+                key: 'retraining',
+                label: <Space><ExclamationCircleOutlined /> 再培训任务</Space>,
+                children: (
+                  <div>
+                    <div style={{ marginBottom: 16 }}>
+                      <Space>
+                        <Text type="secondary">状态筛选：</Text>
+                        <Select defaultValue="" style={{ width: 120 }} allowClear placeholder="全部状态">
+                          <Option value="pending">待培训</Option>
+                          <Option value="in_progress">培训中</Option>
+                          <Option value="completed">已完成</Option>
+                        </Select>
+                        <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchRetrainingTasks()}>刷新</Button>
+                      </Space>
+                    </div>
+                    <Table
+                      rowKey="id"
+                      columns={retrainingColumns}
+                      dataSource={retrainingTasks}
+                      loading={retrainingLoading}
+                      pagination={{ pageSize: 10 }}
+                      size="small"
+                      locale={{ emptyText: <Empty description="暂无再培训任务" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+                    />
                   </div>
-                  <Table
-                    rowKey="id"
-                    columns={retrainingColumns}
-                    dataSource={retrainingTasks}
-                    pagination={{ pageSize: 10 }}
-                    size="small"
-                  />
-                </div>
-              ),
-            },
-          ]}
-        />
-      </Card>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      )}
 
       <Drawer
         title={
@@ -876,7 +906,7 @@ const DrivingScore: React.FC = () => {
                 <Button
                   type="dashed"
                   icon={<SafetyCertificateOutlined />}
-                  onClick={() => message.info('正在检查连续无违规加分资格...')}
+                  onClick={() => detailDrawer && handleCheckBonus(detailDrawer.driver_id)}
                 >
                   检查加分资格
                 </Button>

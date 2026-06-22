@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 
 	scoreSvc "github.com/dangerous-drive-guard/backend/internal/score/service"
+	"github.com/dangerous-drive-guard/backend/pkg/middleware"
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
 
@@ -23,16 +24,17 @@ func (h *ScoreHandler) RegisterRoutes(r *app.RouterGroup, authMiddleware app.Han
 	scores := r.Group("/scores", authMiddleware)
 	{
 		scores.GET("/overview", h.GetOverview)
-		scores.GET("/leaderboard", h.GetLeaderboard)
+		scores.GET("/leaderboard", middleware.RoleAuth("admin"), h.GetLeaderboard)
 		scores.GET("/drivers/:id", h.GetDriverScore)
 		scores.GET("/drivers/:id/bonuses", h.GetDriverBonuses)
 		scores.POST("/drivers/:id/check-bonus", h.CheckBonus)
-		scores.GET("/monthly-reports", h.ListMonthlyReports)
-		scores.GET("/monthly-reports/:id", h.GetMonthlyReport)
-		scores.POST("/monthly-reports/:id/send", h.SendMonthlyReport)
+		scores.GET("/monthly-reports", middleware.RoleAuth("admin", "dispatcher"), h.ListMonthlyReports)
+		scores.GET("/monthly-reports/:id", middleware.RoleAuth("admin", "dispatcher"), h.GetMonthlyReport)
+		scores.POST("/monthly-reports/:id/send", middleware.RoleAuth("admin"), h.SendMonthlyReport)
+		scores.POST("/monthly-reports/batch-send", middleware.RoleAuth("admin"), h.BatchSendMonthlyReports)
 		scores.GET("/drivers/:id/monthly-report", h.GetDriverMonthlyReport)
-		scores.GET("/retraining-tasks", h.ListRetrainingTasks)
-		scores.PUT("/retraining-tasks/:id", h.UpdateRetrainingTask)
+		scores.GET("/retraining-tasks", middleware.RoleAuth("admin", "dispatcher"), h.ListRetrainingTasks)
+		scores.PUT("/retraining-tasks/:id", middleware.RoleAuth("admin"), h.UpdateRetrainingTask)
 	}
 }
 
@@ -127,12 +129,7 @@ func (h *ScoreHandler) GetMonthlyReport(c context.Context, ctx *app.RequestConte
 		return
 	}
 
-	var report struct {
-		ID int64 `json:"id"`
-	}
 	_ = reportID
-	_ = report
-
 	response.Success(ctx, map[string]interface{}{
 		"id": reportID,
 	})
@@ -187,6 +184,25 @@ func (h *ScoreHandler) SendMonthlyReport(c context.Context, ctx *app.RequestCont
 
 	response.Success(ctx, map[string]interface{}{
 		"sent": true,
+	})
+}
+
+func (h *ScoreHandler) BatchSendMonthlyReports(c context.Context, ctx *app.RequestContext) {
+	month := ctx.DefaultQuery("month", "")
+	if month == "" {
+		month = time.Now().AddDate(0, -1, 0).Format("2006-01")
+	}
+
+	sent, failed, err := h.scoreService.BatchSendMonthlyReports(c, month)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, map[string]interface{}{
+		"month":  month,
+		"sent":   sent,
+		"failed": failed,
 	})
 }
 

@@ -18,6 +18,8 @@ type Config struct {
 	Route      RouteConfig      `mapstructure:"route"`
 	Traffic    TrafficConfig    `mapstructure:"traffic"`
 	Weather    WeatherConfig    `mapstructure:"weather"`
+	SMTP       SMTPConfig       `mapstructure:"smtp"`
+	Score      ScoreConfig      `mapstructure:"score"`
 	JWT        JWTConfig        `mapstructure:"jwt"`
 	Log        LogConfig        `mapstructure:"log"`
 }
@@ -176,6 +178,22 @@ type CaiYunConfig struct {
 type JWTConfig struct {
 	Secret       string `mapstructure:"secret"`
 	ExpireHours  int    `mapstructure:"expire_hours"`
+}
+
+type SMTPConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	From     string `mapstructure:"from"`
+	UseTLS   bool   `mapstructure:"use_tls"`
+}
+
+type ScoreConfig struct {
+	CalcCron          string  `mapstructure:"calc_cron"`
+	MonthlyReportCron string  `mapstructure:"monthly_report_cron"`
+	RetrainingThreshold float64 `mapstructure:"retraining_threshold"`
+	RetrainingCheckCron string `mapstructure:"retraining_check_cron"`
 }
 
 type LogConfig struct {

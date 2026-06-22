@@ -166,6 +166,7 @@ const MainLayout: React.FC = () => {
       '/waybills': 'waybill:manage',
       '/escort': 'escort:event_report',
       '/restricted-areas': 'restricted:manage',
+      '/driving-score': 'score:manage',
     }
     if (permMap[key]) return hasPermission(permMap[key])
     return true

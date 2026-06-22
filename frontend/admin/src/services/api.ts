@@ -1564,6 +1564,8 @@ export const scoreApi = {
     api.getPage<MonthlyReport>('/scores/monthly-reports', params),
   sendMonthlyReport: (reportId: number) =>
     api.post<{ sent: boolean }>(`/scores/monthly-reports/${reportId}/send`),
+  batchSendMonthlyReports: (params?: { month?: string }) =>
+    api.post<{ month: string; sent: number; failed: number }>('/scores/monthly-reports/batch-send', params),
   listRetrainingTasks: (params?: PageParams & { status?: string }) =>
     api.getPage<RetrainingTask>('/scores/retraining-tasks', params),
   updateRetrainingTask: (taskId: number, data: { status: string; result_note?: string; result_score?: number }) =>

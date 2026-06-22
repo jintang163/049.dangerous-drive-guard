@@ -10,6 +10,8 @@ import (
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
+	"github.com/dangerous-drive-guard/backend/pkg/email"
+	"github.com/dangerous-drive-guard/backend/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +23,349 @@ func NewScoreService() *ScoreService {
 	return &ScoreService{
 		db: database.GetDB(),
 	}
+}
+
+const (
+	FatigueDeductionPerAlarm    = 3.0
+	OverspeedDeductionPerEvent  = 2.0
+	SuddenBrakeDeductionPerEvt  = 2.0
+	SuddenAccelDeductionPerEvt  = 2.0
+	SharpTurnDeductionPerEvt    = 2.0
+	LaneDeviationDeductionPerEvt = 1.0
+	PhoneUsageDeductionPerEvt   = 5.0
+	SmokingDeductionPerEvt      = 5.0
+	SeatbeltDeductionPerEvt     = 5.0
+	RouteDeviationDeductionPerEvt = 3.0
+	RetrainingThreshold         = 60.0
+)
+
+func getScoreLevel(score float64) string {
+	switch {
+	case score >= 90:
+		return "excellent"
+	case score >= 75:
+		return "good"
+	case score >= 60:
+		return "normal"
+	case score >= 40:
+		return "poor"
+	default:
+		return "danger"
+	}
+}
+
+type DailyEventCounts struct {
+	FatigueAlarmCount      int
+	OverspeedCount         int
+	SuddenBrakeCount       int
+	SuddenAccelCount       int
+	SharpTurnCount         int
+	LaneDeviationCount     int
+	PhoneUsageCount        int
+	SmokingCount           int
+	SeatbeltViolationCount int
+	RouteDeviationCount    int
+	OverspeedDurationMin   float64
+	TotalDistanceKm        float64
+	DrivingDurationMin     int64
+	NightDrivingDurationMin int64
+}
+
+func (s *ScoreService) CalculateDailyScore(ctx context.Context, driverID int64, tripDate time.Time, events DailyEventCounts) (*model.DrivingScore, error) {
+	var existing model.DrivingScore
+	err := s.db.WithContext(ctx).
+		Where("driver_id = ? AND trip_date = ?", driverID, tripDate.Format("2006-01-02")).
+		First(&existing).Error
+	if err == nil {
+		return &existing, nil
+	}
+
+	fatigueDeduction := float64(events.FatigueAlarmCount) * FatigueDeductionPerAlarm
+	overspeedDeduction := float64(events.OverspeedCount) * OverspeedDeductionPerEvent
+	suddenBrakeDeduction := float64(events.SuddenBrakeCount) * SuddenBrakeDeductionPerEvt
+	suddenAccelDeduction := float64(events.SuddenAccelCount) * SuddenAccelDeductionPerEvt
+	sharpTurnDeduction := float64(events.SharpTurnCount) * SharpTurnDeductionPerEvt
+	laneDeviationDeduction := float64(events.LaneDeviationCount) * LaneDeviationDeductionPerEvt
+	phoneUsageDeduction := float64(events.PhoneUsageCount) * PhoneUsageDeductionPerEvt
+	smokingDeduction := float64(events.SmokingCount) * SmokingDeductionPerEvt
+	seatbeltDeduction := float64(events.SeatbeltViolationCount) * SeatbeltDeductionPerEvt
+	routeDeviationDeduction := float64(events.RouteDeviationCount) * RouteDeviationDeductionPerEvt
+
+	totalDeduction := fatigueDeduction + overspeedDeduction + suddenBrakeDeduction +
+		suddenAccelDeduction + sharpTurnDeduction + laneDeviationDeduction +
+		phoneUsageDeduction + smokingDeduction + seatbeltDeduction + routeDeviationDeduction
+
+	totalScore := 100.0 - totalDeduction
+	if totalScore < 0 {
+		totalScore = 0
+	}
+	totalScore = math.Round(totalScore*100) / 100
+
+	scoreLevel := getScoreLevel(totalScore)
+
+	fatigueScore := math.Max(0, 100-fatigueDeduction)
+	overspeedScore := math.Max(0, 100-overspeedDeduction)
+
+	score := &model.DrivingScore{
+		DriverID:               driverID,
+		TripDate:               tripDate,
+		TotalScore:             totalScore,
+		ScoreLevel:             scoreLevel,
+		FatigueScore:           sql.NullFloat64{Float64: math.Round(fatigueScore*100) / 100, Valid: true},
+		FatigueDeduction:       math.Round(fatigueDeduction*100) / 100,
+		OverspeedScore:         sql.NullFloat64{Float64: math.Round(overspeedScore*100) / 100, Valid: true},
+		OverspeedCount:         events.OverspeedCount,
+		OverspeedDeduction:     math.Round(overspeedDeduction*100) / 100,
+		SuddenBrakeCount:       events.SuddenBrakeCount,
+		SuddenBrakeDeduction:   math.Round(suddenBrakeDeduction*100) / 100,
+		SuddenAccelCount:       events.SuddenAccelCount,
+		SuddenAccelDeduction:   math.Round(suddenAccelDeduction*100) / 100,
+		SharpTurnCount:         events.SharpTurnCount,
+		SharpTurnDeduction:     math.Round(sharpTurnDeduction*100) / 100,
+		LaneDeviationCount:     events.LaneDeviationCount,
+		LaneDeviationDeduction: math.Round(laneDeviationDeduction*100) / 100,
+		PhoneUsageCount:        events.PhoneUsageCount,
+		PhoneUsageDeduction:    math.Round(phoneUsageDeduction*100) / 100,
+		SmokingCount:           events.SmokingCount,
+		SmokingDeduction:       math.Round(smokingDeduction*100) / 100,
+		SeatbeltViolationCount: events.SeatbeltViolationCount,
+		SeatbeltDeduction:      math.Round(seatbeltDeduction*100) / 100,
+		RouteDeviationCount:    events.RouteDeviationCount,
+		RouteDeviationDeduction: math.Round(routeDeviationDeduction*100) / 100,
+		FatigueAlarmCount:      events.FatigueAlarmCount,
+		TotalDistance:           sql.NullFloat64{Float64: events.TotalDistanceKm, Valid: events.TotalDistanceKm > 0},
+		DrivingDuration:        sql.NullInt64{Int64: events.DrivingDurationMin, Valid: events.DrivingDurationMin > 0},
+		NightDrivingDuration:   sql.NullInt64{Int64: events.NightDrivingDurationMin, Valid: events.NightDrivingDurationMin > 0},
+		OverspeedDuration:      sql.NullFloat64{Float64: events.OverspeedDurationMin, Valid: events.OverspeedDurationMin > 0},
+	}
+
+	if err := s.db.WithContext(ctx).Create(score).Error; err != nil {
+		return nil, fmt.Errorf("create daily score error: %w", err)
+	}
+
+	if totalScore < RetrainingThreshold {
+		if err := s.triggerDailyRetraining(ctx, driverID, totalScore, tripDate); err != nil {
+			logger.Sugar.Errorf("trigger retraining for driver %d error: %v", driverID, err)
+		}
+	}
+
+	if err := s.CheckAndAwardNoViolationBonusSilent(ctx, driverID); err != nil {
+		logger.Sugar.Errorf("check bonus for driver %d error: %v", driverID, err)
+	}
+
+	return score, nil
+}
+
+func (s *ScoreService) RunDailyScoreCalculation(ctx context.Context) error {
+	yesterday := time.Now().AddDate(0, 0, -1)
+
+	type DriverEventAgg struct {
+		DriverID             int64   `json:"driver_id"`
+		FatigueAlarmCount    int     `json:"fatigue_alarm_count"`
+		OverspeedCount       int     `json:"overspeed_count"`
+		SuddenBrakeCount     int     `json:"sudden_brake_count"`
+		SuddenAccelCount     int     `json:"sudden_accel_count"`
+		SharpTurnCount       int     `json:"sharp_turn_count"`
+		LaneDeviationCount   int     `json:"lane_deviation_count"`
+		PhoneUsageCount      int     `json:"phone_usage_count"`
+		SmokingCount         int     `json:"smoking_count"`
+		SeatbeltViolationCount int   `json:"seatbelt_violation_count"`
+		RouteDeviationCount  int     `json:"route_deviation_count"`
+		OverspeedDurationMin float64 `json:"overspeed_duration_min"`
+		TotalDistanceKm      float64 `json:"total_distance_km"`
+		DrivingDurationMin   int64   `json:"driving_duration_min"`
+		NightDrivingDurationMin int64 `json:"night_driving_duration_min"`
+	}
+
+	var drivers []model.User
+	if err := s.db.WithContext(ctx).Where("role = ? AND status = 1", model.RoleDriver).Find(&drivers).Error; err != nil {
+		return fmt.Errorf("query drivers error: %w", err)
+	}
+
+	calculated := 0
+	for _, d := range drivers {
+		var agg DriverEventAgg
+		s.db.WithContext(ctx).Table("fatigue_alarms").
+			Select("driver_id, COUNT(*) as fatigue_alarm_count").
+			Where("driver_id = ? AND DATE(created_at) = ?", d.ID, yesterday.Format("2006-01-02")).
+			Scan(&agg)
+
+		var adasAgg struct {
+			LaneDevCount   int `json:"lane_dev_count"`
+			OverspeedCount int `json:"overspeed_count"`
+		}
+		s.db.WithContext(ctx).Table("adas_alerts").
+			Select("driver_id, SUM(CASE WHEN alert_type='lane_departure' THEN 1 ELSE 0 END) as lane_dev_count, SUM(CASE WHEN alert_type='forward_collision' THEN 1 ELSE 0 END) as overspeed_count").
+			Where("driver_id = ? AND DATE(created_at) = ?", d.ID, yesterday.Format("2006-01-02")).
+			Scan(&adasAgg)
+
+		agg.LaneDeviationCount = adasAgg.LaneDevCount
+		agg.OverspeedCount = adasAgg.OverspeedCount
+
+		_, err := s.CalculateDailyScore(ctx, d.ID, yesterday, DailyEventCounts{
+			FatigueAlarmCount:      agg.FatigueAlarmCount,
+			OverspeedCount:         agg.OverspeedCount,
+			SuddenBrakeCount:       agg.SuddenBrakeCount,
+			SuddenAccelCount:       agg.SuddenAccelCount,
+			SharpTurnCount:         agg.SharpTurnCount,
+			LaneDeviationCount:     agg.LaneDeviationCount,
+			PhoneUsageCount:        agg.PhoneUsageCount,
+			SmokingCount:           agg.SmokingCount,
+			SeatbeltViolationCount: agg.SeatbeltViolationCount,
+			RouteDeviationCount:    agg.RouteDeviationCount,
+			OverspeedDurationMin:   agg.OverspeedDurationMin,
+			TotalDistanceKm:        agg.TotalDistanceKm,
+			DrivingDurationMin:     agg.DrivingDurationMin,
+			NightDrivingDurationMin: agg.NightDrivingDurationMin,
+		})
+		if err != nil {
+			logger.Sugar.Errorf("calculate daily score for driver %d error: %v", d.ID, err)
+			continue
+		}
+		calculated++
+	}
+
+	logger.Sugar.Infof("Daily score calculation completed: %d drivers calculated for %s", calculated, yesterday.Format("2006-01-02"))
+	return nil
+}
+
+func (s *ScoreService) triggerDailyRetraining(ctx context.Context, driverID int64, score float64, tripDate time.Time) error {
+	month := tripDate.Format("2006-01")
+	var existing model.DriverRetrainingTask
+	err := s.db.WithContext(ctx).
+		Where("driver_id = ? AND trigger_month = ? AND status IN ?", driverID, month, []string{"pending", "in_progress"}).
+		First(&existing).Error
+	if err == nil {
+		return nil
+	}
+
+	task := &model.DriverRetrainingTask{
+		DriverID:     driverID,
+		TriggerScore: score,
+		TriggerType:  "low_score",
+		TriggerMonth: sql.NullString{String: month, Valid: true},
+		TaskType:     "safety_training",
+		Status:       "pending",
+		CreatedBy:    sql.NullInt64{Int64: 0, Valid: true},
+	}
+	if err := s.db.WithContext(ctx).Create(task).Error; err != nil {
+		return err
+	}
+
+	logger.Sugar.Infof("Auto retraining task created: driver_id=%d, score=%.1f, month=%s", driverID, score, month)
+	return nil
+}
+
+func (s *ScoreService) CheckAndAwardNoViolationBonusSilent(ctx context.Context, driverID int64) error {
+	_, err := s.CheckAndAwardNoViolationBonus(ctx, driverID)
+	return err
+}
+
+func (s *ScoreService) RunMonthlyReportGeneration(ctx context.Context) error {
+	lastMonth := time.Now().AddDate(0, -1, 0).Format("2006-01")
+
+	var drivers []model.User
+	if err := s.db.WithContext(ctx).Where("role = ? AND status = 1", model.RoleDriver).Find(&drivers).Error; err != nil {
+		return fmt.Errorf("query drivers error: %w", err)
+	}
+
+	generated := 0
+	for _, d := range drivers {
+		_, err := s.GetMonthlyReport(ctx, d.ID, lastMonth)
+		if err != nil {
+			logger.Sugar.Errorf("generate monthly report for driver %d (%s) error: %v", d.ID, lastMonth, err)
+			continue
+		}
+		generated++
+	}
+
+	logger.Sugar.Infof("Monthly report generation completed: %d reports for %s", generated, lastMonth)
+	return nil
+}
+
+func (s *ScoreService) RunMonthlyReportPush(ctx context.Context) error {
+	lastMonth := time.Now().AddDate(0, -1, 0).Format("2006-01")
+
+	var reports []model.DrivingScoreMonthlyReport
+	if err := s.db.WithContext(ctx).
+		Where("report_month = ? AND report_sent = 0", lastMonth).
+		Find(&reports).Error; err != nil {
+		return fmt.Errorf("query unsent reports error: %w", err)
+	}
+
+	emailSvc := email.GetService()
+	sent := 0
+	for _, r := range reports {
+		if err := s.sendReportEmail(ctx, emailSvc, &r); err != nil {
+			logger.Sugar.Errorf("send report email for report %d error: %v", r.ID, err)
+			continue
+		}
+		s.db.WithContext(ctx).Model(&model.DrivingScoreMonthlyReport{}).
+			Where("id = ?", r.ID).
+			Updates(map[string]interface{}{
+				"report_sent":    1,
+				"report_sent_at": time.Now(),
+			})
+		sent++
+	}
+
+	logger.Sugar.Infof("Monthly report push completed: %d/%d reports sent for %s", sent, len(reports), lastMonth)
+	return nil
+}
+
+func (s *ScoreService) sendReportEmail(ctx context.Context, emailSvc *email.Service, report *model.DrivingScoreMonthlyReport) error {
+	var driver model.User
+	if err := s.db.WithContext(ctx).First(&driver, report.DriverID).Error; err != nil {
+		return fmt.Errorf("query driver error: %w", err)
+	}
+
+	var trend []email.ScoreTrendPoint
+	if report.ScoreTrend != nil {
+		var rawTrend []map[string]interface{}
+		if err := json.Unmarshal(report.ScoreTrend, &rawTrend); err == nil {
+			for _, t := range rawTrend {
+				date, _ := t["date"].(string)
+				score, _ := t["score"].(float64)
+				trend = append(trend, email.ScoreTrendPoint{Date: date, Score: score})
+			}
+		}
+	}
+
+	data := &email.MonthlyReportData{
+		DriverName:           driver.RealName,
+		ReportMonth:          report.ReportMonth,
+		AvgScore:             report.AvgScore,
+		MinScore:             report.MinScore.Float64,
+		MaxScore:             report.MaxScore.Float64,
+		TotalFatigueAlarms:   report.TotalFatigueAlarms,
+		TotalSuddenEvents:    report.TotalSuddenEvents,
+		TotalOverspeedDur:    report.TotalOverspeedDuration.Float64,
+		TotalDistance:        report.TotalDistance.Float64,
+		TotalDrivingDuration: report.TotalDrivingDuration.Int64,
+		TotalBonusPoints:     report.TotalBonusPoints.Float64,
+		ViolationDays:        report.ViolationDays,
+		CleanDays:            report.CleanDays,
+		NeedRetraining:       report.NeedRetraining == 1,
+		ScoreTrend:           trend,
+	}
+
+	recipients := []string{}
+	if driver.Email != "" {
+		recipients = append(recipients, driver.Email)
+	}
+
+	var admins []model.User
+	s.db.WithContext(ctx).Where("role = ? AND status = 1 AND email != ''", model.RoleAdmin).Find(&admins)
+	for _, a := range admins {
+		recipients = append(recipients, a.Email)
+	}
+
+	if len(recipients) == 0 {
+		logger.Sugar.Warnf("No recipients for monthly report: driver_id=%d", report.DriverID)
+		return nil
+	}
+
+	return emailSvc.SendMonthlyReportEmail(ctx, recipients, data)
 }
 
 func (s *ScoreService) GetOverview(ctx context.Context) (*model.ScoreOverview, error) {
@@ -174,26 +519,6 @@ func (s *ScoreService) GetDriverBonuses(ctx context.Context, driverID int64) ([]
 }
 
 func (s *ScoreService) CheckAndAwardNoViolationBonus(ctx context.Context, driverID int64) (*model.DrivingScoreBonus, error) {
-	var consecutiveCleanDays int
-	err := s.db.WithContext(ctx).Table("driving_scores").
-		Select("COUNT(*)").
-		Where("driver_id = ? AND total_score >= 60 AND trip_date <= CURDATE()", driverID).
-		Where("trip_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)").
-		Order("trip_date DESC").
-		Scan(&consecutiveCleanDays).Error
-	if err != nil {
-		return nil, fmt.Errorf("check clean days error: %w", err)
-	}
-
-	var totalDays int
-	s.db.WithContext(ctx).Table("driving_scores").
-		Where("driver_id = ? AND trip_date <= CURDATE() AND trip_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)", driverID).
-		Count(&totalDays)
-
-	if totalDays < 30 {
-		return nil, nil
-	}
-
 	type DayScore struct {
 		TripDate   time.Time `json:"trip_date"`
 		TotalScore float64   `json:"total_score"`
@@ -205,7 +530,11 @@ func (s *ScoreService) CheckAndAwardNoViolationBonus(ctx context.Context, driver
 		Order("trip_date DESC").
 		Find(&dayScores)
 
-	consecutiveCleanDays = 0
+	if len(dayScores) < 30 {
+		return nil, nil
+	}
+
+	consecutiveCleanDays := 0
 	for _, ds := range dayScores {
 		if ds.TotalScore >= 60 {
 			consecutiveCleanDays++
@@ -219,7 +548,7 @@ func (s *ScoreService) CheckAndAwardNoViolationBonus(ctx context.Context, driver
 	}
 
 	var existing model.DrivingScoreBonus
-	err = s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Where("driver_id = ? AND bonus_type = ? AND status = 1 AND end_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)",
 			driverID, "no_violation_30d").
 		First(&existing).Error
@@ -248,6 +577,7 @@ func (s *ScoreService) CheckAndAwardNoViolationBonus(ctx context.Context, driver
 		return nil, fmt.Errorf("create bonus error: %w", err)
 	}
 
+	logger.Sugar.Infof("Bonus awarded: driver_id=%d, type=no_violation_30d, points=5, streak=%d days", driverID, consecutiveCleanDays)
 	return bonus, nil
 }
 
@@ -291,33 +621,33 @@ func (s *ScoreService) generateMonthlyReport(ctx context.Context, driverID int64
 	sum := 0.0
 
 	trend := make([]map[string]interface{}, 0, len(scores))
-	for _, s := range scores {
-		sum += s.TotalScore
-		if s.TotalScore < minScore {
-			minScore = s.TotalScore
+	for _, sc := range scores {
+		sum += sc.TotalScore
+		if sc.TotalScore < minScore {
+			minScore = sc.TotalScore
 		}
-		if s.TotalScore > maxScore {
-			maxScore = s.TotalScore
+		if sc.TotalScore > maxScore {
+			maxScore = sc.TotalScore
 		}
-		totalFatigue += s.FatigueAlarmCount
-		totalSudden += s.SuddenBrakeCount + s.SuddenAccelCount + s.SharpTurnCount
-		if s.OverspeedDuration.Valid {
-			totalOverspeedDur += s.OverspeedDuration.Float64
+		totalFatigue += sc.FatigueAlarmCount
+		totalSudden += sc.SuddenBrakeCount + sc.SuddenAccelCount + sc.SharpTurnCount
+		if sc.OverspeedDuration.Valid {
+			totalOverspeedDur += sc.OverspeedDuration.Float64
 		}
-		if s.TotalDistance.Valid {
-			totalDist += s.TotalDistance.Float64
+		if sc.TotalDistance.Valid {
+			totalDist += sc.TotalDistance.Float64
 		}
-		if s.DrivingDuration.Valid {
-			totalDuration += s.DrivingDuration.Int64
+		if sc.DrivingDuration.Valid {
+			totalDuration += sc.DrivingDuration.Int64
 		}
-		if s.TotalScore >= 60 {
+		if sc.TotalScore >= 60 {
 			cleanDays++
 		} else {
 			violationDays++
 		}
 		trend = append(trend, map[string]interface{}{
-			"date":  s.TripDate.Format("2006-01-02"),
-			"score": s.TotalScore,
+			"date":  sc.TripDate.Format("2006-01-02"),
+			"score": sc.TotalScore,
 		})
 	}
 	avgScore = sum / float64(len(scores))
@@ -331,7 +661,7 @@ func (s *ScoreService) generateMonthlyReport(ctx context.Context, driverID int64
 		Scan(&totalBonus)
 
 	needRetraining := 0
-	if avgScore < 60 {
+	if avgScore < RetrainingThreshold {
 		needRetraining = 1
 	}
 
@@ -448,10 +778,48 @@ func (s *ScoreService) ListMonthlyReports(ctx context.Context, page, pageSize in
 }
 
 func (s *ScoreService) SendMonthlyReport(ctx context.Context, reportID int64) error {
+	var report model.DrivingScoreMonthlyReport
+	if err := s.db.WithContext(ctx).First(&report, reportID).Error; err != nil {
+		return fmt.Errorf("query report error: %w", err)
+	}
+
+	emailSvc := email.GetService()
+	if err := s.sendReportEmail(ctx, emailSvc, &report); err != nil {
+		return fmt.Errorf("send report email error: %w", err)
+	}
+
 	return s.db.WithContext(ctx).Model(&model.DrivingScoreMonthlyReport{}).
 		Where("id = ?", reportID).
 		Updates(map[string]interface{}{
 			"report_sent":    1,
 			"report_sent_at": time.Now(),
 		}).Error
+}
+
+func (s *ScoreService) BatchSendMonthlyReports(ctx context.Context, month string) (int, int, error) {
+	var reports []model.DrivingScoreMonthlyReport
+	if err := s.db.WithContext(ctx).
+		Where("report_month = ? AND report_sent = 0", month).
+		Find(&reports).Error; err != nil {
+		return 0, 0, fmt.Errorf("query unsent reports error: %w", err)
+	}
+
+	emailSvc := email.GetService()
+	sent, failed := 0, 0
+	for _, r := range reports {
+		if err := s.sendReportEmail(ctx, emailSvc, &r); err != nil {
+			logger.Sugar.Errorf("batch send report %d error: %v", r.ID, err)
+			failed++
+			continue
+		}
+		s.db.WithContext(ctx).Model(&model.DrivingScoreMonthlyReport{}).
+			Where("id = ?", r.ID).
+			Updates(map[string]interface{}{
+				"report_sent":    1,
+				"report_sent_at": time.Now(),
+			})
+		sent++
+	}
+
+	return sent, failed, nil
 }

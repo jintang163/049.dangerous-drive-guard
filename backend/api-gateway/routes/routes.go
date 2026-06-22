@@ -33,8 +33,10 @@ import (
 	weatherSvc "github.com/dangerous-drive-guard/backend/internal/weather/service"
 	scoreHttp "github.com/dangerous-drive-guard/backend/internal/score/delivery/http"
 	scoreSvc "github.com/dangerous-drive-guard/backend/internal/score/service"
+	scoreCron "github.com/dangerous-drive-guard/backend/internal/score/cron"
 	serviceareaHttp "github.com/dangerous-drive-guard/backend/internal/servicearea/delivery/http"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
+	"github.com/dangerous-drive-guard/backend/pkg/email"
 	"github.com/dangerous-drive-guard/backend/pkg/middleware"
 )
 
@@ -310,5 +312,10 @@ func Register(h *server.Hertz) {
 		}
 
 		scoreHandler.RegisterRoutes(api, middleware.JWTAuth())
+
+		email.Init(&config.Global.SMTP)
+
+		scoreScheduler := scoreCron.NewCronScheduler(scoreService)
+		scoreScheduler.Start()
 	}
 }
