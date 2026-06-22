@@ -34,6 +34,8 @@ const (
 	MsgDispatchCommand      MessageType = "dispatch_command"
 	MsgWaybillUpdate        MessageType = "waybill_update"
 	MsgWeatherAlert         MessageType = "weather_alert"
+	MsgADASAlert            MessageType = "adas_alert"
+	MsgVehicleControl       MessageType = "vehicle_control"
 	MsgHeartbeat            MessageType = "heartbeat"
 	MsgRestrictedAreaUpdate MessageType = "restricted_area_update"
 	MsgTrafficEvent         MessageType = "traffic_event"
@@ -250,6 +252,30 @@ func (h *Hub) DispatchCommand(vehicleID int64, cmdType string, payload map[strin
 		},
 	}
 	h.sendToVehicle(vehicleID, msg)
+}
+
+func (h *Hub) BroadcastToMonitor(msg *WSMessage, roles ...string) {
+	msgData, _ := json.Marshal(msg)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	roleSet := make(map[string]bool)
+	for _, r := range roles {
+		roleSet[r] = true
+	}
+	hasRoles := len(roles) > 0
+
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			if !hasRoles || roleSet[client.Role] {
+				select {
+				case client.Send <- msgData:
+				default:
+				}
+			}
+		}
+	}
 }
 
 type RestrictedAreaSyncPayload struct {
@@ -614,3 +640,89 @@ func (h *Hub) BroadcastEscortPolling(escortID int64, payload interface{}) {
 	}
 	h.mu.RUnlock()
 }
+
+func (h *Hub) BroadcastADASAlert(alert interface{}, vehicleID int64) {
+	msg := &WSMessage{
+		Type:      MsgADASAlert,
+		Timestamp: time.Now().Unix(),
+		Data:      alert,
+	}
+	msgData, _ := json.Marshal(msg)
+
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			if client.Role == "admin" || client.Role == "dispatcher" {
+				select {
+				case client.Send <- msgData:
+				default:
+				}
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	h.sendToVehicle(vehicleID, msg)
+}
+
+func (h *Hub) SendADASAlertToVehicle(vehicleID int64, alert interface{}) {
+	msg := &WSMessage{
+		Type:      MsgADASAlert,
+		Timestamp: time.Now().Unix(),
+		Data:      alert,
+	}
+	h.sendToVehicle(vehicleID, msg)
+}
+
+func (h *Hub) SendVehicleControl(vehicleID int64, controlType string, value float64, reason string, alertID int64) {
+	msg := &WSMessage{
+		Type:      MsgVehicleControl,
+		Timestamp: time.Now().Unix(),
+		Data: map[string]interface{}{
+			"vehicle_id": vehicleID,
+			"type":       controlType,
+			"value":      value,
+			"reason":     reason,
+			"alert_id":   alertID,
+			"timestamp":  time.Now().Format("2006-01-02 15:04:05"),
+		},
+	}
+	h.sendToVehicle(vehicleID, msg)
+
+	monitorMsg := &WSMessage{
+		Type:      MsgDispatchCommand,
+		Timestamp: time.Now().Unix(),
+		Data: map[string]interface{}{
+			"vehicle_id":    vehicleID,
+			"command":       "vehicle_control",
+			"control_type":  controlType,
+			"control_value": value,
+			"reason":        reason,
+			"alert_id":      alertID,
+		},
+	}
+	monitorData, _ := json.Marshal(monitorMsg)
+	h.mu.RLock()
+	for _, clients := range h.monitorClients {
+		for _, client := range clients {
+			if client.Role == "admin" || client.Role == "dispatcher" {
+				select {
+				case client.Send <- monitorData:
+				default:
+				}
+			}
+		}
+	}
+	h.mu.RUnlock()
+}
+
+func (h *Hub) SendVoiceReminderToVehicle(vehicleID int64, message string, level string) {
+	priority := 1
+	if level == "warning" {
+		priority = 2
+	} else if level == "critical" {
+		priority = 3
+	}
+	h.SendIntercomToVehicle(vehicleID, message, priority)
+}
+

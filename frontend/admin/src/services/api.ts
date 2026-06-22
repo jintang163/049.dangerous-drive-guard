@@ -874,6 +874,13 @@ export const adasApi = {
     api.get<ADASConfig>(`/adas/config/${vehicle_id}`),
   updateConfig: (data: ADASConfig) =>
     api.put<ADASConfig>('/adas/config', data),
+
+  getVehicleActiveAlerts: (vehicle_id: number, limit?: number) =>
+    api.get<ADASAlert[]>(`/adas/vehicle/${vehicle_id}/active-alerts`, { limit: limit || 10 }),
+  vehicleAckAlert: (vehicle_id: number, alert_id: number, data: { ack_type?: 'resolve'; note?: string; ack_by_driver?: boolean }) =>
+    api.post<void>(`/adas/vehicle/${vehicle_id}/alert/${alert_id}/ack`, data),
+  sendVoiceAlert: (vehicle_id: number, alert_id: number, message: string) =>
+    api.post<void>(`/adas/vehicle/${vehicle_id}/alert/${alert_id}/voice`, { message }),
 }
 
 export const blockchainApi = {

@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sync"
 	"time"
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
+	"github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
@@ -75,6 +77,19 @@ func (s *ADASService) ProcessRadarData(ctx context.Context, data *model.RadarDat
 		}
 		savedAlerts = append(savedAlerts, alert)
 		s.recordToAlertWindow(data.VehicleID, alert)
+
+		if err := s.updateDrivingScore(ctx, data, alert); err != nil {
+			logger.Sugar.Errorf("update driving score error: %v, alert_no=%s", err, alert.AlertNo)
+		}
+
+		go func(a *model.ADASAlert) {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Sugar.Errorf("push adas alert panic: %v", r)
+				}
+			}()
+			s.pushADASAlertToChannels(ctx, data, a)
+		}(alert)
 	}
 
 	decelerateTriggered := false
@@ -267,6 +282,130 @@ func (s *ADASService) checkForwardCollision(data *model.RadarData, cfg *model.AD
 	}
 }
 
+func (s *ADASService) updateDrivingScore(ctx context.Context, data *model.RadarData, alert *model.ADASAlert) error {
+	today := time.Now().Format("2006-01-02")
+	var id int64
+	s.db.WithContext(ctx).Raw(`
+		SELECT id FROM driving_scores 
+		WHERE driver_id = ? AND trip_date = ? AND (waybill_id = ? OR waybill_id IS NULL) 
+		LIMIT 1`,
+		data.DriverID, today, data.WaybillID,
+	).Scan(&id)
+
+	var closeFollowingDed, laneDepartureDed float64
+	var closeFollowingCnt, laneDepartureCnt int
+
+	switch alert.AlertType {
+	case model.ADASAlertCloseFollowing:
+		closeFollowingCnt = 1
+		switch alert.AlertLevel {
+		case model.ADASLevelCritical:
+			closeFollowingDed = 8
+		case model.ADASLevelWarning:
+			closeFollowingDed = 4
+		default:
+			closeFollowingDed = 1
+		}
+	case model.ADASAlertLaneDeparture:
+		laneDepartureCnt = 1
+		switch alert.AlertLevel {
+		case model.ADASLevelCritical:
+			laneDepartureDed = 6
+		case model.ADASLevelWarning:
+			laneDepartureDed = 3
+		default:
+			laneDepartureDed = 1
+		}
+	case model.ADASAlertForwardCollision:
+		closeFollowingCnt = 1
+		laneDepartureCnt = 0
+		switch alert.AlertLevel {
+		case model.ADASLevelCritical:
+			closeFollowingDed = 10
+		case model.ADASLevelWarning:
+			closeFollowingDed = 5
+		default:
+			closeFollowingDed = 2
+		}
+	default:
+		return nil
+	}
+
+	if id == 0 {
+		score := 100 - closeFollowingDed - laneDepartureDed
+		if score < 0 {
+			score = 0
+		}
+		level := "excellent"
+		if score < 60 {
+			level = "danger"
+		} else if score < 70 {
+			level = "poor"
+		} else if score < 85 {
+			level = "normal"
+		} else if score < 95 {
+			level = "good"
+		}
+		s.db.WithContext(ctx).Exec(`
+			INSERT INTO driving_scores
+			(driver_id, waybill_id, vehicle_id, trip_date, total_score, score_level,
+			 close_following_count, close_following_deduction,
+			 lane_deviation_count, lane_deviation_deduction)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			data.DriverID, data.WaybillID, data.VehicleID, today, score, level,
+			closeFollowingCnt, closeFollowingDed,
+			laneDepartureCnt, laneDepartureDed,
+		)
+		logger.Sugar.Infof("driving score created for adas alert: driver_id=%d, waybill_id=%d, score=%.2f, alert_type=%s",
+			data.DriverID, data.WaybillID, score, alert.AlertType)
+	} else {
+		s.db.WithContext(ctx).Exec(`
+			UPDATE driving_scores SET
+			close_following_count = close_following_count + ?,
+			close_following_deduction = LEAST(close_following_deduction + ?, 25),
+			lane_deviation_count = lane_deviation_count + ?,
+			lane_deviation_deduction = LEAST(lane_deviation_deduction + ?, 20),
+			total_score = GREATEST(100 -
+				fatigue_deduction - overspeed_deduction - sudden_brake_deduction -
+				sudden_accel_deduction - sharp_turn_deduction - lane_deviation_deduction -
+				phone_usage_deduction - smoking_deduction - seatbelt_violation_deduction -
+				route_deviation_deduction - close_following_deduction, 0),
+			score_level = CASE
+				WHEN total_score < 60 THEN 'danger'
+				WHEN total_score < 70 THEN 'poor'
+				WHEN total_score < 85 THEN 'normal'
+				WHEN total_score < 95 THEN 'good'
+				ELSE 'excellent' END,
+			updated_at = NOW()
+			WHERE id = ?`,
+			closeFollowingCnt, closeFollowingDed,
+			laneDepartureCnt, laneDepartureDed,
+			id,
+		)
+		logger.Sugar.Infof("driving score updated for adas alert: id=%d, close_following_cnt=%d, lane_dev_cnt=%d, alert_type=%s",
+			id, closeFollowingCnt, laneDepartureCnt, alert.AlertType)
+	}
+
+	return nil
+}
+
+func (s *ADASService) pushADASAlertToChannels(ctx context.Context, data *model.RadarData, alert *model.ADASAlert) {
+	hub := ws.GetHub()
+
+	hub.BroadcastADASAlert(alert, data.VehicleID)
+
+	if alert.AlertLevel == model.ADASLevelCritical || alert.AlertLevel == model.ADASLevelWarning {
+		hub.SendVoiceReminderToVehicle(data.VehicleID, alert.AlertMessage, string(alert.AlertLevel))
+	}
+
+	if alert.AlertLevel == model.ADASLevelCritical {
+		hub.SendADASAlertToVehicle(data.VehicleID, alert)
+	}
+
+	logger.Sugar.Infof("adas alert pushed to channels: alert_no=%s, type=%s, level=%s, vehicle_id=%d",
+		alert.AlertNo, alert.AlertType, alert.AlertLevel, data.VehicleID)
+}
+
 func (s *ADASService) recordToAlertWindow(vehicleID int64, alert *model.ADASAlert) {
 	s.alertWindowMu.Lock()
 	defer s.alertWindowMu.Unlock()
@@ -350,12 +489,30 @@ func (s *ADASService) checkFrequencyAndDecelerate(ctx context.Context, data *mod
 		logger.Sugar.Errorf("save auto-decelerate alert error: %v", err)
 	}
 
+	hub := ws.GetHub()
+	hub.SendVehicleControl(data.VehicleID, "decelerate", decelerateValue,
+		fmt.Sprintf("ADAS自动降速：%d分钟内预警%d次，跟车过近%d次/车道偏离%d次",
+			cfg.FrequencyWindowMinutes, state.TotalAlertCnt, state.CloseFollowingCnt, state.LaneDepartureCnt),
+		decelAlert.ID,
+	)
+
+	go func(a *model.ADASAlert) {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Sugar.Errorf("push decelerate alert panic: %v", r)
+			}
+		}()
+		s.pushADASAlertToChannels(ctx, data, a)
+	}(decelAlert)
+
+	s.updateDrivingScore(ctx, data, decelAlert)
+
 	state.ReportedToCenter = true
 
-	s.reportToCenter(ctx, data, state, cfg, decelerateValue)
+	s.reportToCenter(ctx, data, state, cfg, decelerateValue, decelAlert.ID)
 
-	logger.Sugar.Warnf("adas auto decelerate triggered: vehicle_id=%d, driver_id=%d, alerts=%d in %dmin, decelerate_to=%.0fkm/h",
-		data.VehicleID, data.DriverID, state.TotalAlertCnt, cfg.FrequencyWindowMinutes, decelerateValue)
+	logger.Sugar.Warnf("adas auto decelerate triggered: vehicle_id=%d, driver_id=%d, alerts=%d in %dmin, decelerate_to=%.0fkm/h, alert_id=%d",
+		data.VehicleID, data.DriverID, state.TotalAlertCnt, cfg.FrequencyWindowMinutes, decelerateValue, decelAlert.ID)
 
 	return true, decelerateValue, true
 }
@@ -380,15 +537,61 @@ func (s *ADASService) persistFrequencyTracker(ctx context.Context, data *model.R
 	}
 }
 
-func (s *ADASService) reportToCenter(ctx context.Context, data *model.RadarData, state *frequencyState, cfg *model.ADASConfig, decelerateValue float64) {
+func (s *ADASService) reportToCenter(ctx context.Context, data *model.RadarData, state *frequencyState, cfg *model.ADASConfig, decelerateValue float64, alertID int64) {
 	var vehicle model.Vehicle
-	s.db.WithContext(ctx).Where("id = ?", data.VehicleID).First(&vehicle)
+	if err := s.db.WithContext(ctx).Where("id = ?", data.VehicleID).First(&vehicle).Error; err != nil {
+		logger.Sugar.Warnf("query vehicle error: %v", err)
+	}
 
 	var driver model.User
-	s.db.WithContext(ctx).Where("id = ?", data.DriverID).First(&driver)
+	if err := s.db.WithContext(ctx).Where("id = ?", data.DriverID).First(&driver).Error; err != nil {
+		logger.Sugar.Warnf("query driver error: %v", err)
+	}
 
-	logger.Sugar.Infof("adas report to center: vehicle=%s, driver=%s, close_following=%d, lane_departure=%d, total=%d, decelerate_to=%.0f",
-		vehicle.PlateNumber, driver.RealName, state.CloseFollowingCnt, state.LaneDepartureCnt, state.TotalAlertCnt, decelerateValue)
+	hub := ws.GetHub()
+	reportPayload := map[string]interface{}{
+		"type":                 "adas_auto_decelerate",
+		"alert_id":             alertID,
+		"vehicle_id":           data.VehicleID,
+		"vehicle_plate":        vehicle.PlateNumber,
+		"driver_id":            data.DriverID,
+		"driver_name":          driver.RealName,
+		"waybill_id":           data.WaybillID,
+		"decelerate_value":     decelerateValue,
+		"current_speed":        data.VehicleSpeed,
+		"frequency_window_min": cfg.FrequencyWindowMinutes,
+		"total_alert_count":    state.TotalAlertCnt,
+		"close_following_cnt":  state.CloseFollowingCnt,
+		"lane_departure_cnt":   state.LaneDepartureCnt,
+		"latitude":             data.Latitude,
+		"longitude":            data.Longitude,
+		"timestamp":            time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	monitorMsg := &ws.WSMessage{
+		Type:      ws.MsgDispatchCommand,
+		Timestamp: time.Now().Unix(),
+		Data: map[string]interface{}{
+			"command": "adas_report",
+			"payload": reportPayload,
+		},
+	}
+	hub.BroadcastToMonitor(monitorMsg, "admin", "dispatcher")
+
+	reportContent := fmt.Sprintf("ADAS自动降速通知：车辆%s（司机%s）%d分钟内累计预警%d次（跟车过近%d次/车道偏离%d次），已自动降速至%.0fkm/h",
+		vehicle.PlateNumber, driver.RealName, cfg.FrequencyWindowMinutes, state.TotalAlertCnt,
+		state.CloseFollowingCnt, state.LaneDepartureCnt, decelerateValue)
+
+	reportNo := fmt.Sprintf("ADAS-RPT-%s-%04d", time.Now().Format("20060102-150405"), time.Now().UnixNano()%10000)
+	s.db.WithContext(ctx).Exec(`
+		INSERT INTO dispatch_reports (report_no, vehicle_id, driver_id, report_type, level, content, latitude, longitude, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		reportNo, data.VehicleID, data.DriverID, "adas_auto_decelerate", "high",
+		reportContent, data.Latitude, data.Longitude, "pending",
+	)
+
+	logger.Sugar.Infof("adas report dispatched: report_no=%s, vehicle=%s, driver=%s, close_following=%d, lane_departure=%d, total=%d, decelerate_to=%.0f",
+		reportNo, vehicle.PlateNumber, driver.RealName, state.CloseFollowingCnt, state.LaneDepartureCnt, state.TotalAlertCnt, decelerateValue)
 }
 
 func (s *ADASService) getADASConfig(ctx context.Context, vehicleID int64) (*model.ADASConfig, error) {
@@ -615,6 +818,83 @@ func (s *ADASService) GetVehicleFrequencyTrackers(ctx context.Context, vehicleID
 		return nil, fmt.Errorf("query frequency trackers error: %w", err)
 	}
 	return trackers, nil
+}
+
+func (s *ADASService) GetVehicleActiveAlerts(ctx context.Context, vehicleID int64, limit int) ([]*model.ADASAlert, error) {
+	if vehicleID <= 0 {
+		return nil, fmt.Errorf("invalid vehicle id")
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+
+	var alerts []*model.ADASAlert
+	if err := s.db.WithContext(ctx).
+		Where("vehicle_id = ? AND status = ?", vehicleID, model.ADASStatusActive).
+		Order("alert_level DESC, created_at DESC").
+		Limit(limit).
+		Find(&alerts).Error; err != nil {
+		return nil, fmt.Errorf("query active alerts error: %w", err)
+	}
+	return alerts, nil
+}
+
+func (s *ADASService) VehicleAckAlert(ctx context.Context, vehicleID, alertID int64, ackType, note string, ackByDriver bool) error {
+	if alertID <= 0 {
+		return fmt.Errorf("invalid alert id")
+	}
+
+	var alert model.ADASAlert
+	if err := s.db.WithContext(ctx).Where("id = ? AND vehicle_id = ?", alertID, vehicleID).First(&alert).Error; err != nil {
+		return fmt.Errorf("alert not found")
+	}
+
+	now := time.Now()
+	updates := map[string]interface{}{
+		"driver_acknowledged": true,
+		"acknowledged_at":     &now,
+	}
+
+	if ackType == "resolve" {
+		updates["status"] = model.ADASStatusResolved
+		updates["resolved_at"] = &now
+		if note != "" {
+			updates["resolution_note"] = note
+		}
+	}
+
+	if err := s.db.WithContext(ctx).Model(&alert).Updates(updates).Error; err != nil {
+		return fmt.Errorf("ack alert error: %w", err)
+	}
+
+	logger.Sugar.Infof("vehicle ack alert: vehicle_id=%d, alert_id=%d, ack_type=%s, ack_by_driver=%v",
+		vehicleID, alertID, ackType, ackByDriver)
+	return nil
+}
+
+func (s *ADASService) SendVoiceAlertToVehicle(ctx context.Context, vehicleID, alertID int64, message string) error {
+	if vehicleID <= 0 {
+		return fmt.Errorf("invalid vehicle id")
+	}
+	if message == "" {
+		return fmt.Errorf("message is required")
+	}
+
+	hub := ws.GetHub()
+
+	level := "warning"
+	if alertID > 0 {
+		var alert model.ADASAlert
+		if err := s.db.WithContext(ctx).Where("id = ?", alertID).First(&alert).Error; err == nil {
+			level = string(alert.AlertLevel)
+		}
+	}
+
+	hub.SendVoiceReminderToVehicle(vehicleID, message, level)
+
+	logger.Sugar.Infof("voice alert sent: vehicle_id=%d, alert_id=%d, level=%s, message=%s",
+		vehicleID, alertID, level, message)
+	return nil
 }
 
 func generateADASAlertNo(now time.Time) string {

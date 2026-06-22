@@ -44,6 +44,13 @@ func (h *ADASHandler) RegisterRoutes(api *app.RouterGroup, authMiddleware ...app
 			configGroup.GET("/:vehicle_id", h.GetConfig)
 			configGroup.PUT("", h.UpdateConfig)
 		}
+
+		driver := adas.Group("/vehicle")
+		{
+			driver.GET("/:vehicle_id/active-alerts", h.GetVehicleActiveAlerts)
+			driver.POST("/:vehicle_id/alert/:id/ack", h.VehicleAckAlert)
+			driver.POST("/:vehicle_id/alert/:id/voice", h.SendVoiceAlert)
+		}
 	}
 }
 
@@ -203,4 +210,106 @@ func (h *ADASHandler) UpdateConfig(c context.Context, ctx *app.RequestContext) {
 	}
 
 	response.Success(ctx, result)
+}
+
+func (h *ADASHandler) GetVehicleActiveAlerts(c context.Context, ctx *app.RequestContext) {
+	svc := initADASService()
+	vehicleIDStr := ctx.Param("vehicle_id")
+	vehicleID, err := strconv.ParseInt(vehicleIDStr, 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	limitStr := ctx.Query("limit")
+	limit := 10
+	if limitStr != "" {
+		if l, e := strconv.Atoi(limitStr); e == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	alerts, err := svc.GetVehicleActiveAlerts(c, vehicleID, limit)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, alerts)
+}
+
+func (h *ADASHandler) VehicleAckAlert(c context.Context, ctx *app.RequestContext) {
+	svc := initADASService()
+	vehicleIDStr := ctx.Param("vehicle_id")
+	vehicleID, err := strconv.ParseInt(vehicleIDStr, 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	alertIDStr := ctx.Param("id")
+	alertID, err := strconv.ParseInt(alertIDStr, 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid alert id")
+		return
+	}
+
+	var req struct {
+		AckType      string `json:"ack_type"`
+		Note         string `json:"note"`
+		AckByDriver  bool   `json:"ack_by_driver"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, "invalid request body")
+		return
+	}
+
+	if req.AckType == "" {
+		req.AckType = "resolve"
+	}
+
+	if err := svc.VehicleAckAlert(c, vehicleID, alertID, req.AckType, req.Note, req.AckByDriver); err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, nil)
+}
+
+func (h *ADASHandler) SendVoiceAlert(c context.Context, ctx *app.RequestContext) {
+	svc := initADASService()
+	vehicleIDStr := ctx.Param("vehicle_id")
+	vehicleID, err := strconv.ParseInt(vehicleIDStr, 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	alertIDStr := ctx.Param("id")
+	alertID := int64(0)
+	if alertIDStr != "" {
+		if id, e := strconv.ParseInt(alertIDStr, 10, 64); e == nil {
+			alertID = id
+		}
+	}
+
+	var req struct {
+		Message string `json:"message"`
+	}
+	if err := ctx.BindAndValidate(&req); err != nil {
+		response.BadRequest(ctx, "invalid request body")
+		return
+	}
+
+	if req.Message == "" {
+		response.BadRequest(ctx, "message is required")
+		return
+	}
+
+	if err := svc.SendVoiceAlertToVehicle(c, vehicleID, alertID, req.Message); err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, nil)
 }
