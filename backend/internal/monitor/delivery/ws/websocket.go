@@ -44,6 +44,7 @@ const (
 	MsgRouteApplied         MessageType = "route_applied"
 	MsgSOSAlert             MessageType = "sos_alert"
 	MsgEscortPolling        MessageType = "escort_polling"
+	MsgEmergencyTaskCard    MessageType = "emergency_task_card"
 	MsgSubscribe            MessageType = "subscribe"
 	MsgError                MessageType = "error"
 )
@@ -276,6 +277,29 @@ func (h *Hub) BroadcastToMonitor(msg *WSMessage, roles ...string) {
 			}
 		}
 	}
+}
+
+func (h *Hub) SendToUser(userID int64, msg *WSMessage) bool {
+	msgData, _ := json.Marshal(msg)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	sent := false
+	for client := range h.clients {
+		if client.UserID == userID {
+			select {
+			case client.Send <- msgData:
+				sent = true
+			default:
+			}
+		}
+	}
+	return sent
+}
+
+func (h *Hub) SendToDriver(driverID int64, msg *WSMessage) bool {
+	return h.SendToUser(driverID, msg)
 }
 
 type RestrictedAreaSyncPayload struct {

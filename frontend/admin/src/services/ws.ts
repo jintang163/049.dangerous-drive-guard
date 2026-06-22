@@ -1,4 +1,4 @@
-import { useAppStore, VehicleStatus, AlarmItem, FaultAlert } from '@/store/app'
+import { useAppStore, VehicleStatus, AlarmItem, FaultAlert, EmergencyTaskCard } from '@/store/app'
 
 type WSMessage = {
   type: string
@@ -131,6 +131,12 @@ class WebSocketManager {
         const fa = data as FaultAlert
         useAppStore.getState().addFaultAlert(fa)
         this.emit('new_fault_alert', fa)
+        break
+      }
+      case 'emergency_task_card': {
+        const fa = data as EmergencyTaskCard
+        useAppStore.getState().addEmergencyTaskCard(fa)
+        this.emit('new_emergency_task_card', data)
         break
       }
       case 'driver_fatigue': {

@@ -25,17 +25,17 @@ func (h *EmergencyHandler) RegisterRoutes(r *app.RouterGroup, authMiddleware app
 		plans := emergency.Group("/plans")
 		{
 			plans.GET("", h.ListPlans)
+			plans.GET("/search", h.SearchByUNNumber)
 			plans.GET("/:id", h.GetPlan)
 			plans.POST("", middleware.RoleAuth("admin", "dispatcher"), h.CreatePlan)
 			plans.PUT("/:id", middleware.RoleAuth("admin", "dispatcher"), h.UpdatePlan)
 			plans.DELETE("/:id", middleware.RoleAuth("admin"), h.DeletePlan)
-			plans.GET("/search", h.SearchByUNNumber)
 		}
 		cards := emergency.Group("/task-cards")
 		{
 			cards.GET("", h.ListTaskCards)
-			cards.GET("/:id", h.GetTaskCard)
 			cards.POST("/generate", middleware.RoleAuth("admin", "dispatcher"), h.GenerateTaskCard)
+			cards.GET("/:id", h.GetTaskCard)
 			cards.POST("/:id/ack", h.AckTaskCard)
 			cards.POST("/:id/complete", middleware.RoleAuth("admin", "dispatcher"), h.CompleteTaskCard)
 			cards.POST("/:id/cancel", middleware.RoleAuth("admin", "dispatcher"), h.CancelTaskCard)
@@ -142,8 +142,7 @@ func (h *EmergencyHandler) GenerateTaskCard(c context.Context, ctx *app.RequestC
 		return
 	}
 	operatorID := int64(ctx.GetUint64("userID"))
-	req.OperatorID = operatorID
-	card, err := h.svc.GenerateTaskCard(c, &req)
+	card, err := h.svc.GenerateTaskCard(c, &req, operatorID)
 	if err != nil {
 		response.InternalError(ctx, err.Error())
 		return

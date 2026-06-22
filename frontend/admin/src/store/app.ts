@@ -90,6 +90,40 @@ export interface FaultAlert {
   status: 0 | 1 | 2
 }
 
+export interface EmergencyTaskCard {
+  id: number
+  card_no: string
+  plan_id: number
+  un_number: string
+  danger_class: string
+  vehicle_id: number
+  driver_id: number
+  waybill_id?: number
+  card_title: string
+  leak_disposal_brief: string
+  neutralizer_brief?: string
+  protective_equipment_brief: string
+  evacuation_distance?: string
+  first_aid_brief: string
+  special_notes?: string
+  push_channel: string
+  push_status: 'pending' | 'pushed' | 'acknowledged' | 'expired'
+  pushed_at?: string
+  acknowledged_at?: string
+  source_type: string
+  source_id?: number
+  status: 'active' | 'completed' | 'cancelled' | 'expired'
+  expire_at?: string
+  completed_at?: string
+  completed_by?: number
+  remark?: string
+  created_by?: number
+  created_at: string
+  updated_at: string
+  vehicle_plate?: string
+  driver_name?: string
+}
+
 export interface VehicleItem {
   id: number
   plate_number: string
@@ -526,6 +560,8 @@ interface AppState {
   unreadAlarmCount: number
   faultAlerts: FaultAlert[]
   unreadFaultAlertCount: number
+  emergencyTaskCards: EmergencyTaskCard[]
+  unreadEmergencyCount: number
   waybillList: WaybillItem[]
   selectedWaybill: WaybillItem | null
   escortEvents: EscortEvent[]
@@ -559,6 +595,11 @@ interface AppState {
   ackFaultAlert: (id: number) => void
   resolveFaultAlert: (id: number) => void
   clearFaultAlerts: () => void
+  addEmergencyTaskCard: (card: EmergencyTaskCard) => void
+  ackEmergencyTaskCard: (id: number) => void
+  updateEmergencyTaskCard: (id: number, data: Partial<EmergencyTaskCard>) => void
+  clearEmergencyTaskCards: () => void
+  fetchEmergencyTaskCards: (params?: any) => Promise<void>
   updateWaybillList: (list: WaybillItem[]) => void
   upsertWaybillItem: (w: WaybillItem) => void
   deleteWaybillItem: (id: number) => void
@@ -631,6 +672,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   unreadAlarmCount: 0,
   faultAlerts: [],
   unreadFaultAlertCount: 0,
+  emergencyTaskCards: [],
+  unreadEmergencyCount: 0,
   waybillList: [],
   selectedWaybill: null,
   escortEvents: [],
@@ -717,6 +760,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
   clearFaultAlerts: () =>
     set({ faultAlerts: [], unreadFaultAlertCount: 0 }),
+
+  addEmergencyTaskCard: card =>
+    set(state => ({
+      emergencyTaskCards: [card, ...state.emergencyTaskCards].slice(0, 100),
+      unreadEmergencyCount: state.unreadEmergencyCount + 1,
+    })),
+  ackEmergencyTaskCard: id =>
+    set(state => ({
+      emergencyTaskCards: state.emergencyTaskCards.map(c =>
+        c.id === id ? { ...c, push_status: 'acknowledged' as const } : c
+      ),
+    })),
+  updateEmergencyTaskCard: (id, data) =>
+    set(state => ({
+      emergencyTaskCards: state.emergencyTaskCards.map(c =>
+        c.id === id ? { ...c, ...data } : c
+      ),
+    })),
+  clearEmergencyTaskCards: () =>
+    set({ emergencyTaskCards: [], unreadEmergencyCount: 0 }),
 
   updateWaybillList: list => set({ waybillList: list }),
   upsertWaybillItem: w =>
@@ -884,6 +947,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  fetchEmergencyTaskCards: async (params) => {
+    set({ loading: { ...get().loading, rescue: true }, error: null })
+    try {
+      const data = await emergencyApi.listTaskCards(params)
+      set({
+        emergencyTaskCards: data?.list || [],
+        unreadEmergencyCount: data?.list?.filter((c: EmergencyTaskCard) => c.push_status === 'pending').length || 0,
+        loading: { ...get().loading, rescue: false },
+      })
+    } catch (e: any) {
+      set({ error: e.message || '获取应急任务卡失败', loading: { ...get().loading, rescue: false } })
+      throw e
+    }
+  },
+
   logout: () => {
     localStorage.removeItem('ddg_access_token')
     localStorage.removeItem('ddg_user_info')
@@ -901,6 +979,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       unreadAlarmCount: 0,
       faultAlerts: [],
       unreadFaultAlertCount: 0,
+      emergencyTaskCards: [],
+      unreadEmergencyCount: 0,
       waybillList: [],
       selectedWaybill: null,
       escortEvents: [],

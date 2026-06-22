@@ -19,6 +19,7 @@ import ServiceAreas from '@/pages/ServiceAreas'
 import Profile from '@/pages/Profile'
 import TirePressureChart from '@/pages/TirePressureChart'
 import EmergencyPlan from '@/pages/EmergencyPlan'
+import DriverEmergencyTask from '@/pages/DriverEmergencyTask'
 import NotFound from '@/pages/NotFound'
 import RequireAuth from '@/components/RequireAuth'
 import { useAppStore } from '@/store/app'
@@ -51,6 +52,7 @@ const App: React.FC = () => {
         <Route path="profile" element={<Profile />} />
         <Route path="tire-pressure-chart" element={<TirePressureChart />} />
         <Route path="emergency-plan" element={<EmergencyPlan />} />
+        <Route path="my-emergency-tasks" element={<DriverEmergencyTask />} />
       </Route>
       <Route path="/big-screen" element={<DashboardLayout />} />
       <Route path="*" element={<NotFound />} />

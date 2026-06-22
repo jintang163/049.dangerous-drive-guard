@@ -32,6 +32,7 @@ import {
   MenuUnfoldOutlined,
   FundProjectionScreenOutlined,
   CoffeeOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAppStore } from '@/store/app'
@@ -113,6 +114,11 @@ const MainLayout: React.FC = () => {
       key: '/rescue',
       icon: <WarningOutlined />,
       label: '紧急救援',
+    },
+    {
+      key: '/my-emergency-tasks',
+      icon: <ExclamationCircleOutlined />,
+      label: '我的应急任务',
     },
     {
       key: '/weather',

@@ -358,12 +358,26 @@ func (s *EmergencyService) GenerateTaskCard(ctx context.Context, req *TaskCardGe
 
 	emergencySendMQ(card, "emergency_task_card_created")
 
+	s.db.WithContext(ctx).Exec(`
+		UPDATE emergency_task_cards SET push_status = 'pushed', pushed_at = NOW(), updated_at = NOW()
+		WHERE id = ?
+	`, card.ID)
+	card.PushStatus = "pushed"
+	now := time.Now()
+	card.PushedAt = &now
+
 	hub := monitorWs.GetHub()
 	hub.BroadcastToMonitor(&monitorWs.WSMessage{
 		Type:      "emergency_task_card",
 		Timestamp: time.Now().Unix(),
 		Data:      card,
 	}, "admin", "dispatcher")
+
+	hub.SendToDriver(card.DriverID, &monitorWs.WSMessage{
+		Type:      "emergency_task_card",
+		Timestamp: time.Now().Unix(),
+		Data:      card,
+	})
 
 	return card, nil
 }
