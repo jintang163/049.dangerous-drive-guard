@@ -17,6 +17,7 @@ import Blockchain from '@/pages/Blockchain'
 import RestrictedAreas from '@/pages/RestrictedAreas'
 import ServiceAreas from '@/pages/ServiceAreas'
 import Profile from '@/pages/Profile'
+import TirePressureChart from '@/pages/TirePressureChart'
 import NotFound from '@/pages/NotFound'
 import RequireAuth from '@/components/RequireAuth'
 import { useAppStore } from '@/store/app'
@@ -47,6 +48,7 @@ const App: React.FC = () => {
         <Route path="restricted-areas" element={<RestrictedAreas />} />
         <Route path="service-areas" element={<ServiceAreas />} />
         <Route path="profile" element={<Profile />} />
+        <Route path="tire-pressure-chart" element={<TirePressureChart />} />
       </Route>
       <Route path="/big-screen" element={<DashboardLayout />} />
       <Route path="*" element={<NotFound />} />

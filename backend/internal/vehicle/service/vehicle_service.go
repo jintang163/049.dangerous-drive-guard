@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
+	maintenanceSvc "github.com/dangerous-drive-guard/backend/internal/maintenance/service"
 	monitorWs "github.com/dangerous-drive-guard/backend/internal/monitor/delivery/ws"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
@@ -19,7 +20,8 @@ import (
 )
 
 type VehicleService struct {
-	db *gorm.DB
+	db             *gorm.DB
+	maintenanceSvc *maintenanceSvc.MaintenanceService
 }
 
 type DiagnosticData struct {
@@ -51,7 +53,10 @@ type DiagnosticData struct {
 }
 
 func NewVehicleService() *VehicleService {
-	return &VehicleService{db: database.GetDB()}
+	return &VehicleService{
+		db:             database.GetDB(),
+		maintenanceSvc: maintenanceSvc.NewMaintenanceService(),
+	}
 }
 
 func (s *VehicleService) CreateVehicle(ctx context.Context, v *model.Vehicle) (*model.Vehicle, error) {
@@ -192,7 +197,69 @@ func (s *VehicleService) UploadDiagnostics(ctx context.Context, vehicleID int64,
 	})
 	_ = mq.Send(ctx, mq.Message{Topic: "vehicle_status", Key: fmt.Sprintf("%d", vehicleID), Body: mqBody})
 
+	s.updateVehicleMileage(ctx, vehicleID, data.VehicleSpeed, data.ReportTime)
+
+	go s.triggerVehicleMaintenanceCheck(context.Background(), vehicleID)
+
 	return nil
+}
+
+func (s *VehicleService) updateVehicleMileage(ctx context.Context, vehicleID int64, currentSpeedKmh float64, reportTime time.Time) {
+	var lastReportTime sql.NullTime
+	var currentMileage sql.NullFloat64
+	row := s.db.WithContext(ctx).Raw(`
+		SELECT v.last_report_time, v.mileage
+		FROM vehicles v WHERE v.id = ?`, vehicleID,
+	).Row()
+	_ = row.Scan(&lastReportTime, &currentMileage)
+
+	if lastReportTime.Valid && currentSpeedKmh > 0 && currentMileage.Valid {
+		timeDiffHours := reportTime.Sub(lastReportTime.Time).Hours()
+		if timeDiffHours > 0 && timeDiffHours < 24 {
+			mileageIncrement := currentSpeedKmh * timeDiffHours
+			newMileage := currentMileage.Float64 + mileageIncrement
+			s.db.WithContext(ctx).Exec(`
+				UPDATE vehicles SET mileage = ?, last_report_time = ?, updated_at = NOW()
+				WHERE id = ?`,
+				newMileage, reportTime, vehicleID,
+			)
+			return
+		}
+	}
+	s.db.WithContext(ctx).Exec(`
+		UPDATE vehicles SET last_report_time = ?, updated_at = NOW() WHERE id = ?`,
+		reportTime, vehicleID,
+	)
+}
+
+func (s *VehicleService) triggerVehicleMaintenanceCheck(ctx context.Context, vehicleID int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf("[VehicleService] triggerVehicleMaintenanceCheck panic: %v", r)
+		}
+	}()
+
+	rows, err := s.db.WithContext(ctx).Raw(`
+		SELECT id FROM maintenance_plans
+		WHERE vehicle_id = ? AND status = 'active'`, vehicleID,
+	).Rows()
+	if err != nil {
+		logger.Errorf("[VehicleService] query active plans failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var planIDs []int64
+	for rows.Next() {
+		var pid int64
+		if err := rows.Scan(&pid); err == nil {
+			planIDs = append(planIDs, pid)
+		}
+	}
+
+	for _, pid := range planIDs {
+		_, _ = s.maintenanceSvc.CheckAndGenerateWorkOrder(ctx, pid, 0)
+	}
 }
 
 func (s *VehicleService) processFaultCode(ctx context.Context, vehicleID int64, code string, lat, lng float64) {

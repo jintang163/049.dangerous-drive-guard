@@ -1,4 +1,4 @@
-import { useAppStore, VehicleStatus, AlarmItem } from '@/store/app'
+import { useAppStore, VehicleStatus, AlarmItem, FaultAlert } from '@/store/app'
 
 type WSMessage = {
   type: string
@@ -125,6 +125,12 @@ class WebSocketManager {
         const alarm = data as AlarmItem
         useAppStore.getState().addAlarm(alarm)
         this.emit('new_alarm', alarm)
+        break
+      }
+      case 'fault_alert': {
+        const fa = data as FaultAlert
+        useAppStore.getState().addFaultAlert(fa)
+        this.emit('new_fault_alert', fa)
         break
       }
       case 'driver_fatigue': {

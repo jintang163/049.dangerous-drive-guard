@@ -73,6 +73,22 @@ export interface AlarmItem {
   driver_name: string
 }
 
+export interface FaultAlert {
+  id: number
+  vehicle_id: number
+  plate_number: string
+  fault_code: string
+  fault_level: 1 | 2 | 3 | 4
+  fault_system: string
+  fault_desc: string
+  fault_suggestion: string
+  emergency_action: string
+  latitude: number
+  longitude: number
+  report_time: string
+  status: 0 | 1 | 2
+}
+
 export interface VehicleItem {
   id: number
   plate_number: string
@@ -507,6 +523,8 @@ interface AppState {
   driverList: DriverItem[]
   alarms: AlarmItem[]
   unreadAlarmCount: number
+  faultAlerts: FaultAlert[]
+  unreadFaultAlertCount: number
   waybillList: WaybillItem[]
   selectedWaybill: WaybillItem | null
   escortEvents: EscortEvent[]
@@ -536,6 +554,10 @@ interface AppState {
   addAlarm: (alarm: AlarmItem) => void
   updateAlarm: (id: number, data: Partial<AlarmItem>) => void
   setUnreadAlarmCount: (n: number) => void
+  addFaultAlert: (fault: FaultAlert) => void
+  ackFaultAlert: (id: number) => void
+  resolveFaultAlert: (id: number) => void
+  clearFaultAlerts: () => void
   updateWaybillList: (list: WaybillItem[]) => void
   upsertWaybillItem: (w: WaybillItem) => void
   deleteWaybillItem: (id: number) => void
@@ -606,6 +628,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   driverList: [],
   alarms: [],
   unreadAlarmCount: 0,
+  faultAlerts: [],
+  unreadFaultAlertCount: 0,
   waybillList: [],
   selectedWaybill: null,
   escortEvents: [],
@@ -676,6 +700,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       alarms: state.alarms.map(a => (a.id === id ? { ...a, ...data } : a)),
     })),
   setUnreadAlarmCount: n => set({ unreadAlarmCount: n }),
+
+  addFaultAlert: fault =>
+    set(state => ({
+      faultAlerts: [fault, ...state.faultAlerts].slice(0, 100),
+      unreadFaultAlertCount: state.unreadFaultAlertCount + 1,
+    })),
+  ackFaultAlert: id =>
+    set(state => ({
+      faultAlerts: state.faultAlerts.map(f => (f.id === id ? { ...f, status: 1 } : f)),
+    })),
+  resolveFaultAlert: id =>
+    set(state => ({
+      faultAlerts: state.faultAlerts.map(f => (f.id === id ? { ...f, status: 2 } : f)),
+    })),
+  clearFaultAlerts: () =>
+    set({ faultAlerts: [], unreadFaultAlertCount: 0 }),
 
   updateWaybillList: list => set({ waybillList: list }),
   upsertWaybillItem: w =>
@@ -858,6 +898,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       driverList: [],
       alarms: [],
       unreadAlarmCount: 0,
+      faultAlerts: [],
+      unreadFaultAlertCount: 0,
       waybillList: [],
       selectedWaybill: null,
       escortEvents: [],

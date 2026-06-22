@@ -185,7 +185,7 @@ VALUES
 -- 4. 车辆保养计划表
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS vehicle_maintenance_plans (
+CREATE TABLE IF NOT EXISTS maintenance_plans (
     id                   BIGINT PRIMARY KEY AUTO_INCREMENT,
     plan_no              VARCHAR(32)  NOT NULL UNIQUE COMMENT '保养计划编号',
     vehicle_id           BIGINT       NOT NULL COMMENT '关联车辆ID',
@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS maintenance_work_orders (
 -- 6. 保养工单操作日志表
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS maintenance_order_logs (
+CREATE TABLE IF NOT EXISTS maintenance_work_order_logs (
     id              BIGINT PRIMARY KEY AUTO_INCREMENT,
     work_order_id   BIGINT       NOT NULL COMMENT '工单ID',
     old_status      VARCHAR(20)  COMMENT '变更前状态',
@@ -310,7 +310,7 @@ CREATE TABLE IF NOT EXISTS vehicle_fault_alert_logs (
 -- 8. 初始化示例保养计划（基于示例车辆）
 -- ============================================================
 
-INSERT INTO vehicle_maintenance_plans
+INSERT INTO maintenance_plans
 (plan_no, vehicle_id, plan_name, maintenance_type, trigger_mode,
  trigger_mileage_km, trigger_days, base_mileage_km, base_date,
  next_mileage_km, next_date, warn_before_km, warn_before_days,
@@ -334,7 +334,7 @@ SELECT
 FROM vehicles v, (SELECT @rn:=0) t
 WHERE v.status IN ('idle','running');
 
-INSERT INTO vehicle_maintenance_plans
+INSERT INTO maintenance_plans
 (plan_no, vehicle_id, plan_name, maintenance_type, trigger_mode,
  trigger_mileage_km, trigger_days, base_mileage_km, base_date,
  next_mileage_km, next_date, warn_before_km, warn_before_days,
@@ -357,3 +357,15 @@ SELECT
     'active'
 FROM vehicles v
 WHERE v.status IN ('idle','running');
+
+-- ============================================================
+-- 9. 扩展 vehicle_fault_alerts 告警表：增加系统分类、经纬度、紧急处置字段
+-- ============================================================
+
+ALTER TABLE vehicle_fault_alerts
+    ADD COLUMN IF NOT EXISTS fault_system     VARCHAR(32)  COMMENT '故障系统分类: engine/chassis/brake/tire/electrical/network/body',
+    ADD COLUMN IF NOT EXISTS emergency_action TEXT         COMMENT '紧急处置步骤',
+    ADD COLUMN IF NOT EXISTS latitude         DECIMAL(10,6) COMMENT '告警时纬度',
+    ADD COLUMN IF NOT EXISTS longitude        DECIMAL(10,6) COMMENT '告警时经度',
+    ADD INDEX IF NOT EXISTS idx_system_level (fault_system, fault_level),
+    ADD INDEX IF NOT EXISTS idx_location (latitude, longitude);

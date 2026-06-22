@@ -37,6 +37,7 @@ import type { MenuProps } from 'antd'
 import { useAppStore } from '@/store/app'
 import { getUserInfo, clearToken, hasPermission } from '@/utils/auth'
 import WebSocketManager from '@/services/ws'
+import FaultAlertNotification from '@/components/FaultAlertNotification'
 
 const { Header, Sider, Content, Footer } = Layout
 const { Title } = Typography
@@ -128,6 +129,11 @@ const MainLayout: React.FC = () => {
       icon: <CoffeeOutlined />,
       label: '服务区管理',
     },
+    {
+      key: '/tire-pressure-chart',
+      icon: <DashboardOutlined />,
+      label: '轮胎与刹车监控',
+    },
   ]
 
   const filteredMenuItems = menuItems.filter(item => {
@@ -182,6 +188,7 @@ const MainLayout: React.FC = () => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      <FaultAlertNotification />
       <Sider
         trigger={null}
         collapsible

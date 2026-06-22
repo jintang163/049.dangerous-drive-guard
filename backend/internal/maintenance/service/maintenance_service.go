@@ -311,7 +311,7 @@ func (s *MaintenanceService) CheckAndGenerateWorkOrder(ctx context.Context, plan
 	}
 
 	var currentMileage float64
-	s.db.WithContext(ctx).Raw("SELECT current_mileage_km FROM vehicles WHERE id=?", plan.VehicleID).Scan(&currentMileage)
+	s.db.WithContext(ctx).Raw("SELECT mileage FROM vehicles WHERE id=?", plan.VehicleID).Scan(&currentMileage)
 
 	now := time.Now()
 	nextDate, _ := time.Parse("2006-01-02", plan.NextDate)
@@ -887,13 +887,13 @@ func (s *MaintenanceService) GetUpcomingMaintenance(ctx context.Context, orgID, 
 
 	rows, err := s.db.WithContext(ctx).Raw(`
 		SELECT p.vehicle_id, v.plate_number, p.id, p.plan_name, p.maintenance_type,
-		       p.next_mileage_km, v.current_mileage_km,
+		       p.next_mileage_km, v.mileage,
 		       p.next_date, p.priority,
-		       (p.next_mileage_km - v.current_mileage_km) AS mileage_left_km,
+		       (p.next_mileage_km - v.mileage) AS mileage_left_km,
 		       DATEDIFF(p.next_date, CURDATE()) AS days_left,
 		       CASE
-		         WHEN p.next_mileage_km <= v.current_mileage_km OR DATEDIFF(p.next_date, CURDATE()) <= 0 THEN 1
-		         WHEN (p.next_mileage_km - v.current_mileage_km) <= p.warn_before_km OR DATEDIFF(p.next_date, CURDATE()) <= p.warn_before_days THEN 1
+		         WHEN p.next_mileage_km <= v.mileage OR DATEDIFF(p.next_date, CURDATE()) <= 0 THEN 1
+		         WHEN (p.next_mileage_km - v.mileage) <= p.warn_before_km OR DATEDIFF(p.next_date, CURDATE()) <= p.warn_before_days THEN 1
 		         ELSE 0
 		       END AS is_urgent
 		FROM maintenance_plans p
@@ -933,7 +933,7 @@ func (s *MaintenanceService) GetUpcomingMaintenance(ctx context.Context, orgID, 
 
 func (s *MaintenanceService) GetOverdueMaintenance(ctx context.Context, orgID, vehicleID int64, limit int) ([]*UpcomingItem, error) {
 	var items []*UpcomingItem
-	whereSQL := "WHERE p.status='active' AND (p.next_mileage_km <= v.current_mileage_km OR DATEDIFF(p.next_date, CURDATE()) <= 0)"
+	whereSQL := "WHERE p.status='active' AND (p.next_mileage_km <= v.mileage OR DATEDIFF(p.next_date, CURDATE()) <= 0)"
 	args := []interface{}{}
 	if orgID > 0 {
 		whereSQL += " AND v.org_id = ?"
@@ -950,9 +950,9 @@ func (s *MaintenanceService) GetOverdueMaintenance(ctx context.Context, orgID, v
 
 	rows, err := s.db.WithContext(ctx).Raw(`
 		SELECT p.vehicle_id, v.plate_number, p.id, p.plan_name, p.maintenance_type,
-		       p.next_mileage_km, v.current_mileage_km,
+		       p.next_mileage_km, v.mileage,
 		       p.next_date, p.priority,
-		       (p.next_mileage_km - v.current_mileage_km) mileage_left_km,
+		       (p.next_mileage_km - v.mileage) mileage_left_km,
 		       DATEDIFF(p.next_date, CURDATE()) days_left, 1 urgent
 		FROM maintenance_plans p
 		LEFT JOIN vehicles v ON v.id = p.vehicle_id

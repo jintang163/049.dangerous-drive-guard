@@ -206,6 +206,24 @@ export const userApi = {
   resetPassword: (id: number) => api.post<{ password: string }>(`/users/${id}/reset-password`),
 }
 
+export interface ChartDataPoint {
+  time: string
+  value: number
+}
+
+export interface WheelChartData {
+  fl?: ChartDataPoint[]
+  fr?: ChartDataPoint[]
+  rl?: ChartDataPoint[]
+  rr?: ChartDataPoint[]
+  stats?: {
+    max?: number
+    min?: number
+    avg?: number
+    warn_count?: number
+  }
+}
+
 export const vehicleApi = {
   list: (params?: PageParams) => api.getPage<VehicleItem>('/vehicles', params),
   get: (id: number) => api.get<VehicleItem>(`/vehicles/${id}`),
@@ -217,6 +235,23 @@ export const vehicleApi = {
   faults: (id: number) => api.get<Array<{ code: string; desc: string; level: 'low' | 'medium' | 'high'; time: string }>>(`/vehicles/${id}/faults`),
   getRealtimeStatus: (id: number) => api.get<VehicleStatus>(`/vehicles/${id}/status`),
   listRealtimeStatus: (params?: { org_id?: number }) => api.get<VehicleStatus[]>('/vehicles/status', params),
+  tirePressureChart: (id: number, params?: { start_time?: string; end_time?: string; interval?: 'raw' | 'minute' | 'hour' | 'day' }) =>
+    api.get<any>(`/vehicles/${id}/tire-pressure/chart`, params),
+  tireTempChart: (id: number, params?: { start_time?: string; end_time?: string; interval?: 'raw' | 'minute' | 'hour' | 'day' }) =>
+    api.get<any>(`/vehicles/${id}/tire-temp/chart`, params),
+  brakeTempChart: (id: number, params?: { start_time?: string; end_time?: string; interval?: 'raw' | 'minute' | 'hour' | 'day' }) =>
+    api.get<any>(`/vehicles/${id}/brake-temp/chart`, params),
+  exportDiagnostics: (id: number, params?: { start_time?: string; end_time?: string }) =>
+    api.get<Blob>(`/vehicles/${id}/diagnostics/export`, { ...params, responseType: 'blob' }),
+  getFaultAlerts: (id: number) => api.get<any[]>(`/vehicles/${id}/faults/alerts`),
+  listAllFaultAlerts: (params?: PageParams & { status?: number; level?: number; vehicle_id?: number }) =>
+    api.getPage<any>('/vehicles/faults/alerts', params),
+  ackFaultAlert: (vehicleId: number, alertId: number) =>
+    api.post(`/vehicles/${vehicleId}/faults/${alertId}/ack`),
+  resolveFaultAlert: (vehicleId: number, alertId: number, data?: { resolve_note?: string }) =>
+    api.post(`/vehicles/${vehicleId}/faults/${alertId}/resolve`, data),
+  getDiagnosticsStats: (params?: { org_id?: number; start_time?: string; end_time?: string }) =>
+    api.get<any>('/vehicles/diagnostics/stats', params),
 }
 
 export const driverApi = {
