@@ -8,6 +8,7 @@ import (
 	adasSvc "github.com/dangerous-drive-guard/backend/internal/adas/service"
 	authHttp "github.com/dangerous-drive-guard/backend/internal/auth/delivery/http"
 	authSvc "github.com/dangerous-drive-guard/backend/internal/auth/service"
+	"github.com/dangerous-drive-guard/backend/internal/common/model"
 	blockchainHttp "github.com/dangerous-drive-guard/backend/internal/blockchain/delivery/http"
 	blockchainSvc "github.com/dangerous-drive-guard/backend/internal/blockchain/service"
 	escortHttp "github.com/dangerous-drive-guard/backend/internal/escort/delivery/http"
@@ -35,6 +36,8 @@ import (
 	scoreSvc "github.com/dangerous-drive-guard/backend/internal/score/service"
 	scoreCron "github.com/dangerous-drive-guard/backend/internal/score/cron"
 	serviceareaHttp "github.com/dangerous-drive-guard/backend/internal/servicearea/delivery/http"
+	voiceHttp "github.com/dangerous-drive-guard/backend/internal/voice/delivery/http"
+	voiceSvc "github.com/dangerous-drive-guard/backend/internal/voice/service"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/email"
 	"github.com/dangerous-drive-guard/backend/pkg/middleware"
@@ -77,6 +80,14 @@ func Register(h *server.Hertz) {
 
 	scoreService := scoreSvc.NewScoreService()
 	scoreHandler := scoreHttp.NewScoreHandler(scoreService)
+
+	voiceService := voiceSvc.NewVoiceInterventionService()
+	voiceHandler := voiceHttp.NewVoiceInterventionHandler()
+
+	fatigueDetector := fatigueSvc.NewFatigueService(config.Global)
+	fatigueDetector.RegisterAlarmCallback(func(ctx context.Context, alarm *model.FatigueAlarm) {
+		_, _ = voiceService.TriggerIntervention(ctx, alarm)
+	})
 
 	api := h.Group("/api/v1")
 	{
@@ -312,6 +323,8 @@ func Register(h *server.Hertz) {
 		}
 
 		scoreHandler.RegisterRoutes(api, middleware.JWTAuth())
+
+		voiceHandler.RegisterRoutes(api, middleware.JWTAuth(), middleware.RoleAuth)
 
 		email.Init(&config.Global.SMTP)
 

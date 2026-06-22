@@ -34,6 +34,7 @@ import {
   CoffeeOutlined,
   ExclamationCircleOutlined,
   StarOutlined,
+  SoundOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAppStore } from '@/store/app'
@@ -151,6 +152,11 @@ const MainLayout: React.FC = () => {
       icon: <StarOutlined />,
       label: '驾驶行为评分',
     },
+    {
+      key: '/voice-intervention',
+      icon: <SoundOutlined />,
+      label: '语音疲劳干预',
+    },
   ]
 
   const filteredMenuItems = menuItems.filter(item => {
@@ -167,6 +173,7 @@ const MainLayout: React.FC = () => {
       '/escort': 'escort:event_report',
       '/restricted-areas': 'restricted:manage',
       '/driving-score': 'score:manage',
+      '/voice-intervention': 'voice:manage',
     }
     if (permMap[key]) return hasPermission(permMap[key])
     return true

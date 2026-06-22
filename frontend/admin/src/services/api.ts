@@ -1572,4 +1572,157 @@ export const scoreApi = {
     api.put<{ updated: boolean }>(`/scores/retraining-tasks/${taskId}`, data),
 }
 
+export type AudioCategory = 'family' | 'custom' | 'system' | 'emergency'
+
+export interface VoiceAudioItem {
+  id: number
+  driver_id: number
+  org_id: number
+  name: string
+  category: AudioCategory
+  audio_url: string
+  audio_format: string
+  duration_sec: number
+  file_size: number
+  volume: number
+  description: string
+  tags?: any
+  is_default: boolean
+  is_enabled: boolean
+  play_count: number
+  created_by: number
+  created_at?: string
+  updated_at?: string
+}
+
+export type InterventionStrategyType = 'normal' | 'continuous' | 'severe' | 'emotional'
+
+export interface InterventionAlarmTrigger {
+  alarm_levels?: number[]
+  alarm_types?: string[]
+  min_continuous_minutes?: number
+  min_fatigue_score?: number
+}
+
+export interface VoiceStrategyItem {
+  id: number
+  name: string
+  strategy_type: InterventionStrategyType
+  priority: number
+  is_default: boolean
+  is_enabled: boolean
+  driver_id: number
+  org_id: number
+  alarm_trigger?: InterventionAlarmTrigger
+  audio_ids?: number[]
+  force_high_volume: boolean
+  force_volume_percent: number
+  play_times: number
+  play_interval_sec: number
+  shuffle_audios: boolean
+  emotional_mode: boolean
+  cooldown_seconds: number
+  description: string
+  created_by: number
+  created_at?: string
+  updated_at?: string
+}
+
+export type InterventionPlayStatus = 'pending' | 'sent' | 'playing' | 'completed' | 'failed'
+
+export interface VoiceInterventionLog {
+  id: number
+  vehicle_id: number
+  driver_id: number
+  waybill_id: number
+  alarm_id: number
+  strategy_id: number
+  audio_id: number
+  audio_name: string
+  audio_url: string
+  category: AudioCategory
+  strategy_type: InterventionStrategyType
+  play_status: InterventionPlayStatus
+  is_high_volume: boolean
+  actual_volume_percent: number
+  play_times: number
+  total_play_duration_ms: number
+  alarm_level: number
+  alarm_type: string
+  fatigue_score: number
+  continuous_minutes: number
+  driver_ack: boolean
+  ack_at?: string
+  sent_at?: string
+  completed_at?: string
+  error_msg?: string
+  mq_message_id?: string
+  vehicle_plate?: string
+  driver_name?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface VoiceInterventionStats {
+  total_count: number
+  completed_count: number
+  failed_count: number
+  high_volume_count: number
+  family_audio_count: number
+  continuous_triggered: number
+  severe_triggered: number
+  total_play_duration_ms: number
+  driver_ack_rate: string
+}
+
+export const voiceApi = {
+  listAudios: (params?: PageParams & { driver_id?: number; org_id?: number; category?: AudioCategory }) =>
+    api.getPage<VoiceAudioItem>('/voice-intervention/audios', params),
+  getAudio: (id: number) => api.get<VoiceAudioItem>(`/voice-intervention/audios/${id}`),
+  createAudio: (data: Partial<VoiceAudioItem>) =>
+    api.post<VoiceAudioItem>('/voice-intervention/audios', data),
+  updateAudio: (id: number, data: Partial<VoiceAudioItem>) =>
+    api.put<{ id: number; updated: boolean }>(`/voice-intervention/audios/${id}`, data),
+  deleteAudio: (id: number) =>
+    api.delete<{ id: number; deleted: boolean }>(`/voice-intervention/audios/${id}`),
+  uploadAudio: (file: File, extra?: { name?: string; category?: AudioCategory; description?: string; driver_id?: number; volume?: number }) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (extra?.name) formData.append('name', extra.name)
+    if (extra?.category) formData.append('category', extra.category)
+    if (extra?.description) formData.append('description', extra.description)
+    if (extra?.driver_id !== undefined) formData.append('driver_id', String(extra.driver_id))
+    if (extra?.volume !== undefined) formData.append('volume', String(extra.volume))
+    return api.post<VoiceAudioItem>('/voice-intervention/audios/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  setDefaultAudio: (id: number, data: { driver_id?: number; category: AudioCategory }) =>
+    api.post<{ audio_id: number; is_default: boolean }>(`/voice-intervention/audios/${id}/set-default`, data),
+
+  listStrategies: (params?: PageParams & { driver_id?: number; org_id?: number; strategy_type?: InterventionStrategyType }) =>
+    api.getPage<VoiceStrategyItem>('/voice-intervention/strategies', params),
+  getStrategy: (id: number) => api.get<VoiceStrategyItem>(`/voice-intervention/strategies/${id}`),
+  createStrategy: (data: Partial<VoiceStrategyItem>) =>
+    api.post<VoiceStrategyItem>('/voice-intervention/strategies', data),
+  updateStrategy: (id: number, data: Partial<VoiceStrategyItem>) =>
+    api.put<{ id: number; updated: boolean }>(`/voice-intervention/strategies/${id}`, data),
+  deleteStrategy: (id: number) =>
+    api.delete<{ id: number; deleted: boolean }>(`/voice-intervention/strategies/${id}`),
+
+  listLogs: (params?: PageParams & { vehicle_id?: number; driver_id?: number; alarm_id?: number; status?: InterventionPlayStatus; start_time?: string; end_time?: string }) =>
+    api.getPage<VoiceInterventionLog>('/voice-intervention/logs', params),
+  updateLogStatus: (id: number, data: { status: InterventionPlayStatus; error_msg?: string; duration_ms?: number }) =>
+    api.put<{ id: number; status: InterventionPlayStatus }>(`/voice-intervention/logs/${id}/status`, data),
+  driverAckLog: (id: number) =>
+    api.post<{ id: number; ack: boolean }>(`/voice-intervention/logs/${id}/ack`),
+
+  testPlay: (data: { vehicle_id: number; audio_id: number; volume?: number }) =>
+    api.post<VoiceInterventionLog>('/voice-intervention/test-play', data),
+  matchStrategy: (data: { driver_id: number; org_id?: number; alarm_level: number; alarm_type: string; fatigue_score?: number; continuous_minutes?: number }) =>
+    api.post<{ matched: boolean; strategy?: VoiceStrategyItem; selected_audio?: VoiceAudioItem; is_high_volume: boolean; volume_percent: number; reason?: string }>('/voice-intervention/match', data),
+  getStatistics: (days = 30) =>
+    api.get<VoiceInterventionStats>('/voice-intervention/statistics', { days }),
+}
+
 export default api
