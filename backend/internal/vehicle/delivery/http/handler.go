@@ -25,6 +25,17 @@ type DiagnosticsUpload struct {
 	TirePressureFR float64  `json:"tire_pressure_fr"`
 	TirePressureRL float64  `json:"tire_pressure_rl"`
 	TirePressureRR float64  `json:"tire_pressure_rr"`
+	BrakeTempFL    float64  `json:"brake_temp_fl"`
+	BrakeTempFR    float64  `json:"brake_temp_fr"`
+	BrakeTempRL    float64  `json:"brake_temp_rl"`
+	BrakeTempRR    float64  `json:"brake_temp_rr"`
+	TireTempFL     float64  `json:"tire_temp_fl"`
+	TireTempFR     float64  `json:"tire_temp_fr"`
+	TireTempRL     float64  `json:"tire_temp_rl"`
+	TireTempRR     float64  `json:"tire_temp_rr"`
+	BrakePadWearFR float64  `json:"brake_pad_wear_fr"`
+	BrakePadWearRL float64  `json:"brake_pad_wear_rl"`
+	BrakePadWearRR float64  `json:"brake_pad_wear_rr"`
 	FaultCodes     []string `json:"fault_codes"`
 	Latitude       float64  `json:"latitude"`
 	Longitude      float64  `json:"longitude"`
@@ -57,6 +68,15 @@ func (h *VehicleHandler) RegisterRoutes(r *app.RouterGroup, authMiddleware app.H
 
 		vehicles.GET("/:driver_id/scores", h.GetDrivingScore)
 		vehicles.GET("/scores/rank", h.GetScoreRank)
+
+		vehicles.GET("/:id/tire-pressure/chart", h.GetTirePressureChart)
+		vehicles.GET("/:id/tire-temp/chart", h.GetTireTempChart)
+		vehicles.GET("/:id/brake-temp/chart", h.GetBrakeTempChart)
+		vehicles.GET("/:id/diagnostics/export", h.ExportDiagnostics)
+		vehicles.POST("/:id/faults/:alert_id/ack", h.AckFaultAlert)
+		vehicles.POST("/:id/faults/:alert_id/resolve", h.ResolveFaultAlert)
+		vehicles.GET("/faults/alerts", h.ListAllFaultAlerts)
+		vehicles.GET("/diagnostics/stats", h.GetDiagnosticsStats)
 	}
 }
 
@@ -190,6 +210,17 @@ func (h *VehicleHandler) UploadDiagnostic(c context.Context, ctx *app.RequestCon
 		TirePressureFR: req.TirePressureFR,
 		TirePressureRL: req.TirePressureRL,
 		TirePressureRR: req.TirePressureRR,
+		BrakeTempFL:    req.BrakeTempFL,
+		BrakeTempFR:    req.BrakeTempFR,
+		BrakeTempRL:    req.BrakeTempRL,
+		BrakeTempRR:    req.BrakeTempRR,
+		TireTempFL:     req.TireTempFL,
+		TireTempFR:     req.TireTempFR,
+		TireTempRL:     req.TireTempRL,
+		TireTempRR:     req.TireTempRR,
+		BrakePadWearFR: req.BrakePadWearFR,
+		BrakePadWearRL: req.BrakePadWearRL,
+		BrakePadWearRR: req.BrakePadWearRR,
 		FaultCodes:     req.FaultCodes,
 		Latitude:       req.Latitude,
 		Longitude:      req.Longitude,
@@ -291,4 +322,184 @@ func (h *VehicleHandler) GetScoreRank(c context.Context, ctx *app.RequestContext
 		"list":  ranking,
 		"total": len(ranking),
 	})
+}
+
+func (h *VehicleHandler) GetTirePressureChart(c context.Context, ctx *app.RequestContext) {
+	vehicleID, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	startDate := ctx.Query("start_date")
+	endDate := ctx.Query("end_date")
+	interval := ctx.DefaultQuery("interval", "hour")
+
+	chart, err := h.vehicleService.GetTirePressureChart(c, vehicleID, startDate, endDate, interval)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, chart)
+}
+
+func (h *VehicleHandler) GetTireTempChart(c context.Context, ctx *app.RequestContext) {
+	vehicleID, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	startDate := ctx.Query("start_date")
+	endDate := ctx.Query("end_date")
+	interval := ctx.DefaultQuery("interval", "hour")
+
+	chart, err := h.vehicleService.GetTireTempChart(c, vehicleID, startDate, endDate, interval)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, chart)
+}
+
+func (h *VehicleHandler) GetBrakeTempChart(c context.Context, ctx *app.RequestContext) {
+	vehicleID, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	startDate := ctx.Query("start_date")
+	endDate := ctx.Query("end_date")
+	interval := ctx.DefaultQuery("interval", "hour")
+
+	chart, err := h.vehicleService.GetBrakeTempChart(c, vehicleID, startDate, endDate, interval)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, chart)
+}
+
+func (h *VehicleHandler) ExportDiagnostics(c context.Context, ctx *app.RequestContext) {
+	vehicleID, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+
+	startDate := ctx.Query("start_date")
+	endDate := ctx.Query("end_date")
+	format := ctx.DefaultQuery("format", "json")
+
+	data, err := h.vehicleService.ExportDiagnostics(c, vehicleID, startDate, endDate, format)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	if format == "csv" {
+		ctx.Header("Content-Type", "text/csv; charset=utf-8")
+		ctx.Header("Content-Disposition", "attachment; filename=diagnostics_"+strconv.FormatInt(vehicleID, 10)+".csv")
+		ctx.SetBodyString(data.(string))
+		return
+	}
+
+	response.Success(ctx, data)
+}
+
+func (h *VehicleHandler) AckFaultAlert(c context.Context, ctx *app.RequestContext) {
+	vehicleID, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+	alertID, err := strconv.ParseInt(ctx.Param("alert_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid alert id")
+		return
+	}
+
+	userID, _ := ctx.Get("user_id")
+	remark := ctx.Query("remark")
+
+	err = h.vehicleService.AckFaultAlert(c, vehicleID, alertID, toInt64Ctx(userID), remark)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, utils.H{"acked": true})
+}
+
+func (h *VehicleHandler) ResolveFaultAlert(c context.Context, ctx *app.RequestContext) {
+	vehicleID, err := strconv.ParseInt(ctx.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid vehicle id")
+		return
+	}
+	alertID, err := strconv.ParseInt(ctx.Param("alert_id"), 10, 64)
+	if err != nil {
+		response.BadRequest(ctx, "invalid alert id")
+		return
+	}
+
+	userID, _ := ctx.Get("user_id")
+	remark := ctx.Query("remark")
+
+	err = h.vehicleService.ResolveFaultAlert(c, vehicleID, alertID, toInt64Ctx(userID), remark)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, utils.H{"resolved": true})
+}
+
+func (h *VehicleHandler) ListAllFaultAlerts(c context.Context, ctx *app.RequestContext) {
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
+	orgID, _ := strconv.ParseInt(ctx.DefaultQuery("org_id", "0"), 10, 64)
+	level, _ := strconv.Atoi(ctx.DefaultQuery("level", "0"))
+	status := ctx.Query("status")
+	vehicleID, _ := strconv.ParseInt(ctx.DefaultQuery("vehicle_id", "0"), 10, 64)
+
+	list, total, err := h.vehicleService.ListAllFaultAlerts(c, orgID, vehicleID, level, status, page, pageSize)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Page(ctx, list, total, page, pageSize)
+}
+
+func (h *VehicleHandler) GetDiagnosticsStats(c context.Context, ctx *app.RequestContext) {
+	orgID, _ := strconv.ParseInt(ctx.DefaultQuery("org_id", "0"), 10, 64)
+	vehicleID, _ := strconv.ParseInt(ctx.DefaultQuery("vehicle_id", "0"), 10, 64)
+
+	stats, err := h.vehicleService.GetDiagnosticsStats(c, orgID, vehicleID)
+	if err != nil {
+		response.InternalError(ctx, err.Error())
+		return
+	}
+
+	response.Success(ctx, stats)
+}
+
+func toInt64Ctx(v interface{}) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case int32:
+		return int64(x)
+	case int64:
+		return x
+	case float64:
+		return int64(x)
+	default:
+		return 0
+	}
 }
