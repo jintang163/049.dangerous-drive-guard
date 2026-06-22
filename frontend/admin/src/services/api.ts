@@ -760,6 +760,122 @@ export const weatherApi = {
     api.post<WeatherPushRecord | null>('/weather/driver/en-route', data),
 }
 
+export interface ADASAlert {
+  id: number
+  alert_no: string
+  vehicle_id: number
+  driver_id: number
+  waybill_id: number
+  alert_type: 'close_following' | 'lane_departure' | 'forward_collision' | 'auto_decelerate'
+  alert_level: 'info' | 'warning' | 'critical'
+  status: 'active' | 'resolved' | 'escalated'
+  trigger_value: number
+  threshold_value: number
+  following_distance_m: number
+  vehicle_speed_kmh: number
+  lane_offset_m: number
+  departure_side: 'left' | 'right' | ''
+  ttc_s: number
+  alert_message: string
+  latitude: number
+  longitude: number
+  suggested_action: string
+  decelerate_triggered: boolean
+  decelerate_value_kmh: number
+  reported_to_center: boolean
+  driver_acknowledged: boolean
+  acknowledged_at: string | null
+  resolved_at: string | null
+  resolution_note: string
+  created_at: string
+  vehicle_plate?: string
+  driver_name?: string
+}
+
+export interface ADASConfig {
+  id?: number
+  vehicle_id: number
+  close_following_min_dist_m: number
+  close_following_warn_dist_m: number
+  close_following_crit_dist_m: number
+  lane_departure_threshold_m: number
+  forward_collision_ttc_warn_s: number
+  forward_collision_ttc_crit_s: number
+  frequency_window_minutes: number
+  frequency_alert_threshold: number
+  auto_decelerate_speed_kmh: number
+  enable_close_following: boolean
+  enable_lane_departure: boolean
+  enable_forward_collision: boolean
+  enable_auto_decelerate: boolean
+}
+
+export interface RadarDataPayload {
+  vehicle_id: number
+  driver_id: number
+  waybill_id?: number
+  timestamp?: number
+  following_distance_m: number
+  relative_speed_kmh: number
+  lane_offset_m: number
+  lane_departure_left: boolean
+  lane_departure_right: boolean
+  forward_collision_ttc_s: number
+  vehicle_speed_kmh: number
+  steering_angle_deg: number
+  yaw_rate_deg_s: number
+  latitude: number
+  longitude: number
+  confidence: number
+}
+
+export interface ADASFrequencyTracker {
+  id: number
+  vehicle_id: number
+  driver_id: number
+  window_start: string
+  window_end: string
+  close_following_count: number
+  lane_departure_count: number
+  total_alert_count: number
+  decelerate_triggered: boolean
+  decelerate_value_kmh: number
+  reported_to_center: boolean
+}
+
+export const adasApi = {
+  processRadarData: (data: RadarDataPayload) =>
+    api.post<{
+      alert_triggered: boolean
+      alerts: ADASAlert[]
+      decelerate_triggered: boolean
+      decelerate_value_kmh: number
+      frequency_alert: boolean
+      current_following_distance_m: number
+      current_lane_offset_m: number
+    }>('/adas/radar', data),
+  getAlerts: (params?: PageParams & { vehicle_id?: number; driver_id?: number; waybill_id?: number; alert_type?: string; alert_level?: string; status?: string }) =>
+    api.getPage<ADASAlert>('/adas/alerts', params),
+  getAlert: (id: number) => api.get<ADASAlert>(`/adas/alerts/${id}`),
+  ackAlert: (id: number, data: { ack_type: 'resolve' | 'escalate'; note?: string }) =>
+    api.post<ADASAlert>(`/adas/alerts/${id}/ack`, data),
+  getDriverSummary: (driver_id: number) =>
+    api.get<{
+      today_total: number
+      today_close_following: number
+      today_lane_departure: number
+      today_critical: number
+      active_alerts: number
+      week_total: number
+    }>(`/adas/driver/${driver_id}/summary`),
+  getFrequencyTrackers: (vehicle_id: number, limit?: number) =>
+    api.get<ADASFrequencyTracker[]>(`/adas/vehicle/${vehicle_id}/frequency`, { limit: limit || 20 }),
+  getConfig: (vehicle_id: number) =>
+    api.get<ADASConfig>(`/adas/config/${vehicle_id}`),
+  updateConfig: (data: ADASConfig) =>
+    api.put<ADASConfig>('/adas/config', data),
+}
+
 export const blockchainApi = {
   listBlocks: (params?: { page?: number; page_size?: number; from_height?: number }) =>
     api.getPage<BlockchainBlock>('/blockchain/blocks', params),

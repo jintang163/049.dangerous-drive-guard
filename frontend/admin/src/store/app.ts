@@ -93,6 +93,8 @@ export interface VehicleItem {
   obd_engine_status: string
   fault_codes: Array<{ code: string; desc: string; level: 'low' | 'medium' | 'high'; time: string }>
   maintenance_records: Array<{ id: number; type: string; time: string; content: string; cost: number; operator: string }>
+  adas_enabled: boolean
+  adas_alert_count_today: number
   created_at: string
 }
 
@@ -114,7 +116,7 @@ export interface DriverItem {
   license_expire_date: string
   qualification_cert_no: string
   qualification_cert_expire: string
-  score_radar: { safety: number; fatigue: number; speed: number; lane: number; focus: number; compliance: number }
+  score_radar: { safety: number; fatigue: number; speed: number; lane: number; following: number; focus: number; compliance: number }
   fatigue_trend_30d: Array<{ date: string; count: number }>
   waybills: Array<{ id: number; waybill_no: string; from: string; to: string; date: string; status: string }>
   created_at: string

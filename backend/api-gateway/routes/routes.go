@@ -4,6 +4,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
+	adasHttp "github.com/dangerous-drive-guard/backend/internal/adas/delivery/http"
+	adasSvc "github.com/dangerous-drive-guard/backend/internal/adas/service"
 	authHttp "github.com/dangerous-drive-guard/backend/internal/auth/delivery/http"
 	authSvc "github.com/dangerous-drive-guard/backend/internal/auth/service"
 	blockchainHttp "github.com/dangerous-drive-guard/backend/internal/blockchain/delivery/http"
@@ -47,6 +49,9 @@ func Register(h *server.Hertz) {
 
 	weatherService := weatherSvc.NewWeatherService(config.Global)
 	weatherHandler := weatherHttp.NewWeatherHandler(weatherService)
+
+	adasService := adasSvc.NewADASService(config.Global)
+	adasHandler := adasHttp.NewADASHandler(adasService)
 
 	blockchainService := blockchainSvc.NewBlockchainService(config.Global)
 	blockchainHandler := blockchainHttp.NewBlockchainHandler(blockchainService)
@@ -137,6 +142,8 @@ func Register(h *server.Hertz) {
 		}
 
 		weatherHandler.RegisterRoutes(api, middleware.JWTAuth())
+
+		adasHandler.RegisterRoutes(api, middleware.JWTAuth())
 
 		blockchainHandler.RegisterRoutes(api, middleware.JWTAuth())
 

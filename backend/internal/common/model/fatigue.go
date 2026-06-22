@@ -229,6 +229,8 @@ type DrivingScore struct {
 	SeatbeltViolationDeduction float64 `gorm:"type:decimal(5,2);default:0" json:"seatbelt_violation_deduction"`
 	RouteDeviationCount        int     `gorm:"default:0" json:"route_deviation_count"`
 	RouteDeviationDeduction    float64 `gorm:"type:decimal(5,2);default:0" json:"route_deviation_deduction"`
+	CloseFollowingCount        int     `gorm:"default:0" json:"close_following_count"`
+	CloseFollowingDeduction    float64 `gorm:"type:decimal(5,2);default:0" json:"close_following_deduction"`
 	FatigueAlarmCount          int     `gorm:"default:0" json:"fatigue_alarm_count"`
 	TotalDistance              float64 `gorm:"type:decimal(10,2);default:0" json:"total_distance"`
 	DrivingDuration            int     `gorm:"default:0" json:"driving_duration"`
