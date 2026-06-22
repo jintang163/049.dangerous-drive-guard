@@ -736,6 +736,12 @@ SOURCE multi_camera_fatigue_extension.sql;
 SOURCE weather_extension.sql;
 
 -- ============================================================
+-- 驾驶行为评分模块扩展表
+-- 来源: driving_score_extension.sql
+-- ============================================================
+SOURCE driving_score_extension.sql;
+
+-- ============================================================
 -- 外部路况接入说明
 -- ============================================================
 -- Webhook 接口地址: POST /api/v1/traffic/webhook/import

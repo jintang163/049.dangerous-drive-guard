@@ -1434,4 +1434,140 @@ export interface EmergencyStats {
   danger_class_distribution: Array<{ danger_class: string; count: number }>
 }
 
+export interface ScoreOverview {
+  total_drivers: number
+  excellent_count: number
+  good_count: number
+  normal_count: number
+  poor_count: number
+  danger_count: number
+  avg_score: number
+  retraining_count: number
+  today_calculated: number
+  need_retraining_count: number
+}
+
+export interface ScoreLeaderboardItem {
+  driver_id: number
+  driver_name: string
+  plate_number: string
+  total_score: number
+  score_level: string
+  rank: number
+  avg_score_30d: number
+  bonus_points: number
+  org_name: string
+}
+
+export interface DrivingScoreRecord {
+  id: number
+  driver_id: number
+  waybill_id: number | null
+  vehicle_id: number | null
+  trip_date: string
+  total_score: number
+  score_level: string
+  fatigue_score: number | null
+  fatigue_deduction: number
+  overspeed_score: number | null
+  overspeed_count: number
+  overspeed_deduction: number
+  sudden_brake_count: number
+  sudden_brake_deduction: number
+  sudden_accel_count: number
+  sudden_accel_deduction: number
+  sharp_turn_count: number
+  sharp_turn_deduction: number
+  lane_deviation_count: number
+  lane_deviation_deduction: number
+  phone_usage_count: number
+  phone_usage_deduction: number
+  smoking_count: number
+  smoking_deduction: number
+  seatbelt_violation_count: number
+  seatbelt_violation_deduction: number
+  route_deviation_count: number
+  route_deviation_deduction: number
+  fatigue_alarm_count: number
+  total_distance: number | null
+  driving_duration: number | null
+  night_driving_duration: number | null
+  overspeed_duration: number | null
+}
+
+export interface ScoreBonus {
+  id: number
+  driver_id: number
+  bonus_type: string
+  bonus_points: number
+  reason: string
+  streak_days: number
+  start_date: string | null
+  end_date: string | null
+  awarded_by: number | null
+  status: number
+  created_at: string
+}
+
+export interface MonthlyReport {
+  id: number
+  driver_id: number
+  report_month: string
+  avg_score: number
+  min_score: number | null
+  max_score: number | null
+  total_fatigue_alarms: number
+  total_sudden_events: number
+  total_overspeed_duration: number | null
+  total_distance: number | null
+  total_driving_duration: number | null
+  total_bonus_points: number | null
+  violation_days: number
+  clean_days: number
+  score_trend: Array<{ date: string; score: number }> | null
+  need_retraining: number
+  retraining_triggered_at: string | null
+  report_sent: number
+  report_sent_at: string | null
+}
+
+export interface RetrainingTask {
+  id: number
+  driver_id: number
+  trigger_score: number
+  trigger_type: string
+  trigger_month: string | null
+  task_type: string
+  status: string
+  assigned_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  result_score: number | null
+  result_note: string | null
+  created_by: number | null
+  created_at: string
+}
+
+export const scoreApi = {
+  getOverview: () => api.get<ScoreOverview>('/scores/overview'),
+  getLeaderboard: (params?: { top?: number; order_by?: string }) =>
+    api.get<ScoreLeaderboardItem[]>('/scores/leaderboard', params),
+  getDriverScore: (driverId: number, params?: { days?: number }) =>
+    api.get<{ latest: DrivingScoreRecord; history: DrivingScoreRecord[] }>(`/scores/drivers/${driverId}`, params),
+  getDriverBonuses: (driverId: number) =>
+    api.get<ScoreBonus[]>(`/scores/drivers/${driverId}/bonuses`),
+  checkBonus: (driverId: number) =>
+    api.post<{ awarded: boolean; bonus?: ScoreBonus; message?: string }>(`/scores/drivers/${driverId}/check-bonus`),
+  getDriverMonthlyReport: (driverId: number, params?: { month?: string }) =>
+    api.get<MonthlyReport>(`/scores/drivers/${driverId}/monthly-report`, params),
+  listMonthlyReports: (params?: PageParams & { month?: string; driver_id?: string }) =>
+    api.getPage<MonthlyReport>('/scores/monthly-reports', params),
+  sendMonthlyReport: (reportId: number) =>
+    api.post<{ sent: boolean }>(`/scores/monthly-reports/${reportId}/send`),
+  listRetrainingTasks: (params?: PageParams & { status?: string }) =>
+    api.getPage<RetrainingTask>('/scores/retraining-tasks', params),
+  updateRetrainingTask: (taskId: number, data: { status: string; result_note?: string; result_score?: number }) =>
+    api.put<{ updated: boolean }>(`/scores/retraining-tasks/${taskId}`, data),
+}
+
 export default api

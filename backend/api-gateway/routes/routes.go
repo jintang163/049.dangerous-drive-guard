@@ -31,6 +31,8 @@ import (
 	vehicleSvc "github.com/dangerous-drive-guard/backend/internal/vehicle/service"
 	weatherHttp "github.com/dangerous-drive-guard/backend/internal/weather/delivery/http"
 	weatherSvc "github.com/dangerous-drive-guard/backend/internal/weather/service"
+	scoreHttp "github.com/dangerous-drive-guard/backend/internal/score/delivery/http"
+	scoreSvc "github.com/dangerous-drive-guard/backend/internal/score/service"
 	serviceareaHttp "github.com/dangerous-drive-guard/backend/internal/servicearea/delivery/http"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/middleware"
@@ -70,6 +72,9 @@ func Register(h *server.Hertz) {
 
 	emergencyService := emergencySvc.NewEmergencyService()
 	emergencyHandler := emergencyHttp.NewEmergencyHandler(emergencyService)
+
+	scoreService := scoreSvc.NewScoreService()
+	scoreHandler := scoreHttp.NewScoreHandler(scoreService)
 
 	api := h.Group("/api/v1")
 	{
@@ -303,5 +308,7 @@ func Register(h *server.Hertz) {
 				recommendations.POST("/:id/reject", serviceareaHttp.RejectRecommendation)
 			}
 		}
+
+		scoreHandler.RegisterRoutes(api, middleware.JWTAuth())
 	}
 }

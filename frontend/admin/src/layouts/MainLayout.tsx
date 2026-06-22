@@ -33,6 +33,7 @@ import {
   FundProjectionScreenOutlined,
   CoffeeOutlined,
   ExclamationCircleOutlined,
+  StarOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAppStore } from '@/store/app'
@@ -144,6 +145,11 @@ const MainLayout: React.FC = () => {
       key: '/emergency-plan',
       icon: <SafetyCertificateOutlined />,
       label: '应急预案知识库',
+    },
+    {
+      key: '/driving-score',
+      icon: <StarOutlined />,
+      label: '驾驶行为评分',
     },
   ]
 
