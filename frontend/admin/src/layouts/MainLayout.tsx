@@ -134,6 +134,11 @@ const MainLayout: React.FC = () => {
       icon: <DashboardOutlined />,
       label: '轮胎与刹车监控',
     },
+    {
+      key: '/emergency-plan',
+      icon: <SafetyCertificateOutlined />,
+      label: '应急预案知识库',
+    },
   ]
 
   const filteredMenuItems = menuItems.filter(item => {

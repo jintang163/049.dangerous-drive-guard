@@ -9,6 +9,7 @@ import {
   weatherApi,
   blockchainApi,
   routeApi,
+  emergencyApi,
 } from '@/services/api'
 import type { PageParams } from '@/services/api'
 

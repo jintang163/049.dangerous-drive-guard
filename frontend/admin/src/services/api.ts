@@ -1358,4 +1358,80 @@ export const serviceAreaApi = {
   }>('/service-areas/statistics/overview'),
 }
 
+export const emergencyApi = {
+  listPlans: (params?: PageParams & { un_number?: string; danger_class?: string; keyword?: string }) =>
+    api.getPage<EmergencyPlanItem>('/emergency/plans', params),
+  getPlan: (id: number) => api.get<EmergencyPlanItem>(`/emergency/plans/${id}`),
+  createPlan: (data: any) => api.post<any>('/emergency/plans', data),
+  updatePlan: (id: number, data: any) => api.put<any>(`/emergency/plans/${id}`, data),
+  deletePlan: (id: number) => api.delete(`/emergency/plans/${id}`),
+  searchByUNNumber: (unNumber: string) => api.get<any[]>('/emergency/plans/search', { un_number: unNumber }),
+  listTaskCards: (params?: PageParams & { vehicle_id?: number; driver_id?: number; status?: string; un_number?: string; push_status?: string; card_status?: string }) =>
+    api.getPage<EmergencyTaskCard>('/emergency/task-cards', params),
+  getTaskCard: (id: number) => api.get<EmergencyTaskCard>(`/emergency/task-cards/${id}`),
+  generateTaskCard: (data: { plan_id: number; vehicle_id: number; driver_id: number; waybill_id?: number; source_type?: string; source_id?: number; push_channel?: string; push_channels?: string[] }) =>
+    api.post<EmergencyTaskCard>('/emergency/task-cards/generate', data),
+  ackTaskCard: (id: number) => api.post<{ success: boolean }>(`/emergency/task-cards/${id}/ack`),
+  completeTaskCard: (id: number) => api.post<{ success: boolean }>(`/emergency/task-cards/${id}/complete`),
+  cancelTaskCard: (id: number, data?: { remark?: string }) => api.post<{ success: boolean }>(`/emergency/task-cards/${id}/cancel`, data),
+  getStats: (params?: { org_id?: number }) => api.get<EmergencyStats>('/emergency/stats', params),
+}
+
+export interface EmergencyPlanItem {
+  id: number
+  un_number: string
+  proper_shipping_name_cn: string
+  proper_shipping_name_en: string
+  danger_class: string
+  subsidiary_danger?: string
+  packing_group?: string
+  hazard_summary: string
+  leak_disposal: string
+  neutralizer?: string
+  neutralizer_usage?: string
+  protective_equipment?: string
+  evacuation_distance?: string
+  isolation_distance?: string
+  fire_fighting?: string
+  first_aid?: string
+  environmental_protection?: string
+  special_precautions?: string
+  emergency_contacts?: string
+  reference_standards?: string
+  source: 'builtin' | 'custom'
+  status: 'active' | 'draft' | 'archived'
+  created_at: string
+  updated_at: string
+}
+
+export interface EmergencyTaskCard {
+  id: number
+  card_no: string
+  plan_id: number
+  un_number: string
+  vehicle_id: number
+  plate_number: string
+  driver_id: number
+  driver_name: string
+  waybill_id?: number
+  waybill_no?: string
+  title: string
+  push_channels: string[]
+  push_status: 'pending' | 'pushed' | 'acknowledged' | 'expired'
+  card_status: 'active' | 'completed' | 'cancelled' | 'expired'
+  created_at: string
+  pushed_at?: string
+  acknowledged_at?: string
+  completed_at?: string
+  plan_snapshot?: Partial<EmergencyPlanItem>
+}
+
+export interface EmergencyStats {
+  total_plans: number
+  builtin_plans: number
+  custom_plans: number
+  active_task_cards: number
+  danger_class_distribution: Array<{ danger_class: string; count: number }>
+}
+
 export default api

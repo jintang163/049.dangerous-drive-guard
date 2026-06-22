@@ -11,6 +11,8 @@ import (
 	blockchainHttp "github.com/dangerous-drive-guard/backend/internal/blockchain/delivery/http"
 	blockchainSvc "github.com/dangerous-drive-guard/backend/internal/blockchain/service"
 	escortHttp "github.com/dangerous-drive-guard/backend/internal/escort/delivery/http"
+	emergencyHttp "github.com/dangerous-drive-guard/backend/internal/emergency/delivery/http"
+	emergencySvc "github.com/dangerous-drive-guard/backend/internal/emergency/service"
 	fatigueHttp "github.com/dangerous-drive-guard/backend/internal/fatigue/delivery/http"
 	fatigueSvc "github.com/dangerous-drive-guard/backend/internal/fatigue/service"
 	faultcodeHttp "github.com/dangerous-drive-guard/backend/internal/faultcode/delivery/http"
@@ -66,6 +68,9 @@ func Register(h *server.Hertz) {
 	maintenanceService := maintenanceSvc.NewMaintenanceService()
 	maintenanceHandler := maintenanceHttp.NewMaintenanceHandler(maintenanceService)
 
+	emergencyService := emergencySvc.NewEmergencyService()
+	emergencyHandler := emergencyHttp.NewEmergencyHandler(emergencyService)
+
 	api := h.Group("/api/v1")
 	{
 		api.Use(middleware.TraceID())
@@ -79,6 +84,8 @@ func Register(h *server.Hertz) {
 		faultCodeHandler.RegisterRoutes(api, middleware.JWTAuth())
 
 		maintenanceHandler.RegisterRoutes(api, middleware.JWTAuth())
+
+		emergencyHandler.RegisterRoutes(api, middleware.JWTAuth())
 
 		route := api.Group("/routes", middleware.JWTAuth())
 		{
