@@ -17,6 +17,7 @@ type Config struct {
 	Blockchain BlockchainConfig `mapstructure:"blockchain"`
 	Route      RouteConfig      `mapstructure:"route"`
 	Traffic    TrafficConfig    `mapstructure:"traffic"`
+	Weather    WeatherConfig    `mapstructure:"weather"`
 	JWT        JWTConfig        `mapstructure:"jwt"`
 	Log        LogConfig        `mapstructure:"log"`
 }
@@ -145,6 +146,31 @@ type TrafficConfig struct {
 	WebhookToken       string `mapstructure:"webhook_token"`
 	ScannerIntervalSec int    `mapstructure:"scanner_interval_sec"`
 	TriggerWindowMin   int    `mapstructure:"trigger_window_min"`
+}
+
+type WeatherConfig struct {
+	QWeather         QWeatherConfig  `mapstructure:"qweather"`
+	CaiYun           CaiYunConfig    `mapstructure:"caiyun"`
+	Provider         string          `mapstructure:"provider"`
+	ScannerIntervalSec int           `mapstructure:"scanner_interval_sec"`
+	ExtremeVisibility float64        `mapstructure:"extreme_visibility_m"`
+	ExtremeWindSpeed float64         `mapstructure:"extreme_wind_speed_ms"`
+	SlipperyRainMm    float64        `mapstructure:"slippery_rain_mm"`
+	CacheTTL         int             `mapstructure:"cache_ttl_sec"`
+	PushEnabled      bool            `mapstructure:"push_enabled"`
+	AutoSuspendEnabled bool          `mapstructure:"auto_suspend_enabled"`
+}
+
+type QWeatherConfig struct {
+	Key      string `mapstructure:"key"`
+	BaseURL  string `mapstructure:"base_url"`
+	Timeout  string `mapstructure:"timeout"`
+}
+
+type CaiYunConfig struct {
+	Key      string `mapstructure:"key"`
+	BaseURL  string `mapstructure:"base_url"`
+	Timeout  string `mapstructure:"timeout"`
 }
 
 type JWTConfig struct {

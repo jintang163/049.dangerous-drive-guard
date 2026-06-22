@@ -394,20 +394,24 @@ export interface RescueRequest {
 
 export interface WeatherWarning {
   id: number
-  warning_no: string
-  warning_type: 'rainstorm' | 'fog' | 'wind' | 'snow' | 'ice' | 'high_temp' | 'low_temp' | 'thunder' | 'hail' | 'typhoon'
-  severity_level: 1 | 2 | 3 | 4
+  warning_id: string
+  warning_type: string
+  warning_level: 'blue' | 'yellow' | 'orange' | 'red'
   title: string
   content: string
   affected_provinces: string[]
   affected_cities: string[]
   affected_area_polygon?: Array<{ lat: number; lng: number }>
-  published_time: string
-  expire_time: string
-  affected_vehicle_count: number
-  status: 'active' | 'expired' | 'cancelled'
-  suggestions?: string[]
-  affected_waybills?: number[]
+  publish_time: string
+  end_time?: string
+  related_vehicle_count: number
+  related_waybill_count: number
+  processed: number
+  center_lat?: number
+  center_lng?: number
+  trigger_operation_stop?: number
+  speed_suggestion_kmh?: number
+  suggestion?: string
 }
 
 export interface BlockchainBlock {

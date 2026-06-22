@@ -76,6 +76,24 @@ traffic:
   scanner_interval_sec: 60
   trigger_window_min: 30
 
+weather:
+  provider: qweather
+  qweather:
+    key: your-qweather-api-key
+    base_url: https://devapi.qweather.com/v7
+    timeout: 10s
+  caiyun:
+    key: your-caiyun-api-key
+    base_url: https://api.caiyunapp.com/v2.6
+    timeout: 10s
+  scanner_interval_sec: 120
+  extreme_visibility_m: 50
+  extreme_wind_speed_ms: 25
+  slippery_rain_mm: 2.5
+  cache_ttl_sec: 600
+  push_enabled: true
+  auto_suspend_enabled: true
+
 map:
   amap:
     key: your-amap-web-key
