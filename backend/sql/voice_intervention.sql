@@ -101,6 +101,7 @@ CREATE TABLE `voice_intervention_logs` (
   `audio_id` bigint DEFAULT 0 COMMENT '播放的音频ID',
   `audio_name` varchar(128) DEFAULT '' COMMENT '音频名称快照',
   `audio_url` varchar(512) DEFAULT '' COMMENT '音频URL快照',
+  `audio_format` varchar(16) DEFAULT '' COMMENT '音频格式快照(mp3/wav等)',
   `category` varchar(32) DEFAULT '' COMMENT '音频类型快照',
   `strategy_type` varchar(32) DEFAULT '' COMMENT '策略类型快照',
   `play_status` varchar(32) DEFAULT 'pending' COMMENT '播放状态:pending/sent/playing/completed/failed',

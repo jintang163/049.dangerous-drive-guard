@@ -101,6 +101,7 @@ type VoiceInterventionLog struct {
 	AudioID              int64                  `gorm:"index" json:"audio_id"`
 	AudioName            string                 `gorm:"type:varchar(128)" json:"audio_name"`
 	AudioURL             string                 `gorm:"type:varchar(512)" json:"audio_url"`
+	AudioFormat          string                 `gorm:"type:varchar(16)" json:"audio_format"`
 	Category             AudioCategory          `gorm:"type:varchar(32)" json:"category"`
 	StrategyType         InterventionStrategyType `gorm:"type:varchar(32)" json:"strategy_type"`
 	PlayStatus           InterventionPlayStatus `gorm:"type:varchar(32);index" json:"play_status"`

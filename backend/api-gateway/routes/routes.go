@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
@@ -40,6 +42,7 @@ import (
 	voiceSvc "github.com/dangerous-drive-guard/backend/internal/voice/service"
 	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/email"
+	"github.com/dangerous-drive-guard/backend/pkg/logger"
 	"github.com/dangerous-drive-guard/backend/pkg/middleware"
 )
 
@@ -82,12 +85,19 @@ func Register(h *server.Hertz) {
 	scoreHandler := scoreHttp.NewScoreHandler(scoreService)
 
 	voiceService := voiceSvc.NewVoiceInterventionService()
-	voiceHandler := voiceHttp.NewVoiceInterventionHandler()
+	voiceHandler := voiceHttp.NewVoiceInterventionHandler(voiceService)
 
-	fatigueDetector := fatigueSvc.NewFatigueService(config.Global)
-	fatigueDetector.RegisterAlarmCallback(func(ctx context.Context, alarm *model.FatigueAlarm) {
+	fatigueService := fatigueSvc.NewFatigueService(config.Global)
+	fatigueHandler := fatigueHttp.NewFatigueHandler(fatigueService)
+	fatigueService.RegisterAlarmCallback(func(ctx context.Context, alarm *model.FatigueAlarm) {
 		_, _ = voiceService.TriggerIntervention(ctx, alarm)
 	})
+
+	go func() {
+		if err := voiceService.StartResultConsumer(context.Background()); err != nil {
+			logger.Sugar.Errorf("启动语音播放结果Consumer失败: %v", err)
+		}
+	}()
 
 	api := h.Group("/api/v1")
 	{
@@ -117,14 +127,10 @@ func Register(h *server.Hertz) {
 
 		fatigue := api.Group("/fatigue", middleware.JWTAuth())
 		{
-			fatigue.POST("/detect", fatigueHttp.DetectFatigue)
-			fatigue.POST("/upload/frame", fatigueHttp.UploadFrame)
-			fatigue.POST("/upload/multi-camera", fatigueHttp.UploadMultiCameraFrames)
-			fatigue.GET("/history/:vehicle_id", fatigueHttp.GetHistory)
-			fatigue.GET("/history/:vehicle_id/multi-camera", fatigueHttp.GetMultiCameraHistory)
-			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.ListAlarms)
-			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.AckAlarm)
-			fatigue.GET("/fusion/stats", middleware.RoleAuth("admin", "dispatcher"), fatigueHttp.GetFusionAccuracyStats)
+			fatigueHandler.RegisterRoutes(fatigue)
+			fatigue.GET("/alarms", middleware.RoleAuth("admin", "dispatcher"), fatigueHandler.ListAlarms)
+			fatigue.POST("/alarms/:id/ack", middleware.RoleAuth("admin", "dispatcher"), fatigueHandler.AckAlarm)
+			fatigue.GET("/fusion/stats", middleware.RoleAuth("admin", "dispatcher"), fatigueHandler.GetFusionAccuracyStats)
 
 			nightVision := fatigue.Group("/night-vision")
 			{

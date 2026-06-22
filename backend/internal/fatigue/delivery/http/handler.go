@@ -13,16 +13,18 @@ import (
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
 
-var fatigueService *fatigueSvc.FatigueService
-
-func initService() {
-	if fatigueService == nil {
-		fatigueService = fatigueSvc.NewFatigueService(config.Global)
-	}
+type FatigueHandler struct {
+	fatigueService *fatigueSvc.FatigueService
 }
 
-func DetectFatigue(ctx context.Context, c *app.RequestContext) {
-	initService()
+func NewFatigueHandler(service *fatigueSvc.FatigueService) *FatigueHandler {
+	if service == nil {
+		service = fatigueSvc.NewFatigueService(config.Global)
+	}
+	return &FatigueHandler{fatigueService: service}
+}
+
+func (h *FatigueHandler) DetectFatigue(ctx context.Context, c *app.RequestContext) {
 	var req model.FatigueDetectRequest
 	if err := c.BindAndValidate(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -32,7 +34,7 @@ func DetectFatigue(ctx context.Context, c *app.RequestContext) {
 		req.DetectionTime = time.Now()
 	}
 
-	resp, err := fatigueService.DetectFatigue(ctx, &req)
+	resp, err := h.fatigueService.DetectFatigue(ctx, &req)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -40,8 +42,7 @@ func DetectFatigue(ctx context.Context, c *app.RequestContext) {
 	response.Success(c, resp)
 }
 
-func UploadFrame(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) UploadFrame(ctx context.Context, c *app.RequestContext) {
 	var req struct {
 		VehicleID      int64  `json:"vehicle_id" form:"vehicle_id" binding:"required"`
 		DriverID       int64  `json:"driver_id" form:"driver_id" binding:"required"`
@@ -70,7 +71,7 @@ func UploadFrame(ctx context.Context, c *app.RequestContext) {
 		CameraPosition: model.CameraPosition(req.CameraPosition),
 		EnableFusion:   false,
 	}
-	resp, err := fatigueService.DetectFatigue(ctx, detectReq)
+	resp, err := h.fatigueService.DetectFatigue(ctx, detectReq)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -78,8 +79,7 @@ func UploadFrame(ctx context.Context, c *app.RequestContext) {
 	response.Success(c, resp)
 }
 
-func UploadMultiCameraFrames(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) UploadMultiCameraFrames(ctx context.Context, c *app.RequestContext) {
 	var req struct {
 		VehicleID     int64                   `json:"vehicle_id" binding:"required"`
 		DriverID      int64                   `json:"driver_id" binding:"required"`
@@ -121,7 +121,7 @@ func UploadMultiCameraFrames(ctx context.Context, c *app.RequestContext) {
 		EnableFusion:  true,
 	}
 
-	resp, err := fatigueService.DetectFatigue(ctx, detectReq)
+	resp, err := h.fatigueService.DetectFatigue(ctx, detectReq)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -129,8 +129,7 @@ func UploadMultiCameraFrames(ctx context.Context, c *app.RequestContext) {
 	response.Success(c, resp)
 }
 
-func GetMultiCameraHistory(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) GetMultiCameraHistory(ctx context.Context, c *app.RequestContext) {
 	vehicleID, err := strconv.ParseInt(c.Param("vehicle_id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid vehicle id")
@@ -149,7 +148,7 @@ func GetMultiCameraHistory(ctx context.Context, c *app.RequestContext) {
 		endTime, _ = time.Parse(time.RFC3339, e)
 	}
 
-	records, total, err := fatigueService.GetMultiCameraHistory(ctx, vehicleID, cameraPosition, startTime, endTime, page, pageSize)
+	records, total, err := h.fatigueService.GetMultiCameraHistory(ctx, vehicleID, cameraPosition, startTime, endTime, page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -157,8 +156,7 @@ func GetMultiCameraHistory(ctx context.Context, c *app.RequestContext) {
 	response.Page(c, records, total, page, pageSize)
 }
 
-func GetHistory(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) GetHistory(ctx context.Context, c *app.RequestContext) {
 	vehicleID, err := strconv.ParseInt(c.Param("vehicle_id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid vehicle id")
@@ -176,7 +174,7 @@ func GetHistory(ctx context.Context, c *app.RequestContext) {
 		endTime, _ = time.Parse(time.RFC3339, e)
 	}
 
-	records, total, err := fatigueService.GetHistory(ctx, vehicleID, startTime, endTime, page, pageSize)
+	records, total, err := h.fatigueService.GetHistory(ctx, vehicleID, startTime, endTime, page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -184,15 +182,14 @@ func GetHistory(ctx context.Context, c *app.RequestContext) {
 	response.Page(c, records, total, page, pageSize)
 }
 
-func ListAlarms(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) ListAlarms(ctx context.Context, c *app.RequestContext) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	vehicleID, _ := strconv.ParseInt(c.DefaultQuery("vehicle_id", "0"), 10, 64)
 	status := model.AlarmStatus(c.Query("status"))
 	level, _ := strconv.Atoi(c.DefaultQuery("level", "0"))
 
-	alarms, total, err := fatigueService.ListAlarms(ctx, vehicleID, status, model.AlarmLevel(level), page, pageSize)
+	alarms, total, err := h.fatigueService.ListAlarms(ctx, vehicleID, status, model.AlarmLevel(level), page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -200,13 +197,12 @@ func ListAlarms(ctx context.Context, c *app.RequestContext) {
 	response.Page(c, alarms, total, page, pageSize)
 }
 
-func GetFusionAccuracyStats(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) GetFusionAccuracyStats(ctx context.Context, c *app.RequestContext) {
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "90"))
 	if days <= 0 {
 		days = 90
 	}
-	stats, err := fatigueService.GetFusionAccuracyStats(ctx, days)
+	stats, err := h.fatigueService.GetFusionAccuracyStats(ctx, days)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -214,8 +210,7 @@ func GetFusionAccuracyStats(ctx context.Context, c *app.RequestContext) {
 	response.Success(c, stats)
 }
 
-func AckAlarm(ctx context.Context, c *app.RequestContext) {
-	initService()
+func (h *FatigueHandler) AckAlarm(ctx context.Context, c *app.RequestContext) {
 	alarmID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid alarm id")
@@ -229,7 +224,7 @@ func AckAlarm(ctx context.Context, c *app.RequestContext) {
 	}
 	dispatcherID, _ := c.Get("user_id")
 
-	alarm, err := fatigueService.AcknowledgeAlarm(ctx, alarmID, toInt64(dispatcherID), req.HandleType, req.HandleNote)
+	alarm, err := h.fatigueService.AcknowledgeAlarm(ctx, alarmID, toInt64(dispatcherID), req.HandleType, req.HandleNote)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -250,4 +245,16 @@ func toInt64(v interface{}) int64 {
 	default:
 		return 0
 	}
+}
+
+func (h *FatigueHandler) RegisterRoutes(group *app.RouterGroup, middlewares ...app.HandlerFunc) {
+	api := group
+	if len(middlewares) > 0 {
+		api = group.Group("", middlewares...)
+	}
+	api.POST("/detect", h.DetectFatigue)
+	api.POST("/upload/frame", h.UploadFrame)
+	api.POST("/upload/multi-camera", h.UploadMultiCameraFrames)
+	api.GET("/history/:vehicle_id", h.GetHistory)
+	api.GET("/history/:vehicle_id/multi-camera", h.GetMultiCameraHistory)
 }

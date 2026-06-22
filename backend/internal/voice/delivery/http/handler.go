@@ -19,19 +19,15 @@ import (
 	"github.com/dangerous-drive-guard/backend/pkg/response"
 )
 
-var voiceService *voiceSvc.VoiceInterventionService
-
-func initService() {
-	if voiceService == nil {
-		voiceService = voiceSvc.NewVoiceInterventionService()
-	}
+type VoiceInterventionHandler struct {
+	voiceService *voiceSvc.VoiceInterventionService
 }
 
-type VoiceInterventionHandler struct{}
-
-func NewVoiceInterventionHandler() *VoiceInterventionHandler {
-	initService()
-	return &VoiceInterventionHandler{}
+func NewVoiceInterventionHandler(service *voiceSvc.VoiceInterventionService) *VoiceInterventionHandler {
+	if service == nil {
+		service = voiceSvc.NewVoiceInterventionService()
+	}
+	return &VoiceInterventionHandler{voiceService: service}
 }
 
 func (h *VoiceInterventionHandler) RegisterRoutes(router *app.RouterGroup, authMw app.HandlerFunc, roleMw func(...string) app.HandlerFunc) {
@@ -72,7 +68,6 @@ func (h *VoiceInterventionHandler) RegisterRoutes(router *app.RouterGroup, authM
 // ============================================================
 
 func (h *VoiceInterventionHandler) ListAudios(ctx context.Context, c *app.RequestContext) {
-	initService()
 	driverID, _ := strconv.ParseInt(string(c.Query("driver_id")), 10, 64)
 	orgID, _ := strconv.ParseInt(string(c.Query("org_id")), 10, 64)
 	category := model.AudioCategory(c.Query("category"))
@@ -84,7 +79,7 @@ func (h *VoiceInterventionHandler) ListAudios(ctx context.Context, c *app.Reques
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
-	audios, total, err := voiceService.ListAudios(ctx, driverID, orgID, category, page, pageSize)
+	audios, total, err := h.voiceService.ListAudios(ctx, driverID, orgID, category, page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -93,13 +88,12 @@ func (h *VoiceInterventionHandler) ListAudios(ctx context.Context, c *app.Reques
 }
 
 func (h *VoiceInterventionHandler) GetAudio(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid audio id")
 		return
 	}
-	audio, err := voiceService.GetAudio(ctx, id)
+	audio, err := h.voiceService.GetAudio(ctx, id)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -108,7 +102,6 @@ func (h *VoiceInterventionHandler) GetAudio(ctx context.Context, c *app.RequestC
 }
 
 func (h *VoiceInterventionHandler) CreateAudio(ctx context.Context, c *app.RequestContext) {
-	initService()
 	var audio model.VoiceInterventionAudio
 	if err := c.BindAndValidate(&audio); err != nil {
 		response.BadRequest(c, err.Error())
@@ -116,7 +109,7 @@ func (h *VoiceInterventionHandler) CreateAudio(ctx context.Context, c *app.Reque
 	}
 	userID, _ := c.Get("user_id")
 	audio.CreatedBy = toInt64(userID)
-	err := voiceService.CreateAudio(ctx, &audio)
+	err := h.voiceService.CreateAudio(ctx, &audio)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -125,7 +118,6 @@ func (h *VoiceInterventionHandler) CreateAudio(ctx context.Context, c *app.Reque
 }
 
 func (h *VoiceInterventionHandler) UpdateAudio(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid audio id")
@@ -175,7 +167,7 @@ func (h *VoiceInterventionHandler) UpdateAudio(ctx context.Context, c *app.Reque
 		updates["is_enabled"] = *req.IsEnabled
 	}
 	updates["updated_at"] = time.Now()
-	err = voiceService.UpdateAudio(ctx, id, updates)
+	err = h.voiceService.UpdateAudio(ctx, id, updates)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -184,13 +176,12 @@ func (h *VoiceInterventionHandler) UpdateAudio(ctx context.Context, c *app.Reque
 }
 
 func (h *VoiceInterventionHandler) DeleteAudio(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid audio id")
 		return
 	}
-	err = voiceService.DeleteAudio(ctx, id)
+	err = h.voiceService.DeleteAudio(ctx, id)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -199,7 +190,6 @@ func (h *VoiceInterventionHandler) DeleteAudio(ctx context.Context, c *app.Reque
 }
 
 func (h *VoiceInterventionHandler) SetDefaultAudio(ctx context.Context, c *app.RequestContext) {
-	initService()
 	audioID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid audio id")
@@ -213,7 +203,7 @@ func (h *VoiceInterventionHandler) SetDefaultAudio(ctx context.Context, c *app.R
 		response.BadRequest(c, err.Error())
 		return
 	}
-	err = voiceService.SetDefaultAudio(ctx, req.DriverID, audioID, req.Category)
+	err = h.voiceService.SetDefaultAudio(ctx, req.DriverID, audioID, req.Category)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -222,7 +212,6 @@ func (h *VoiceInterventionHandler) SetDefaultAudio(ctx context.Context, c *app.R
 }
 
 func (h *VoiceInterventionHandler) UploadAudio(ctx context.Context, c *app.RequestContext) {
-	initService()
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		response.BadRequest(c, "file not found: "+err.Error())
@@ -282,7 +271,7 @@ func (h *VoiceInterventionHandler) UploadAudio(ctx context.Context, c *app.Reque
 	userID, _ := c.Get("user_id")
 	audio.CreatedBy = toInt64(userID)
 
-	err = voiceService.CreateAudio(ctx, audio)
+	err = h.voiceService.CreateAudio(ctx, audio)
 	if err != nil {
 		_ = os.Remove(savedPath)
 		response.InternalError(c, "save audio record error: "+err.Error())
@@ -296,7 +285,6 @@ func (h *VoiceInterventionHandler) UploadAudio(ctx context.Context, c *app.Reque
 // ============================================================
 
 func (h *VoiceInterventionHandler) ListStrategies(ctx context.Context, c *app.RequestContext) {
-	initService()
 	driverID, _ := strconv.ParseInt(string(c.Query("driver_id")), 10, 64)
 	orgID, _ := strconv.ParseInt(string(c.Query("org_id")), 10, 64)
 	strategyType := model.InterventionStrategyType(c.Query("strategy_type"))
@@ -308,7 +296,7 @@ func (h *VoiceInterventionHandler) ListStrategies(ctx context.Context, c *app.Re
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
-	strategies, total, err := voiceService.ListStrategies(ctx, driverID, orgID, strategyType, page, pageSize)
+	strategies, total, err := h.voiceService.ListStrategies(ctx, driverID, orgID, strategyType, page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -317,13 +305,12 @@ func (h *VoiceInterventionHandler) ListStrategies(ctx context.Context, c *app.Re
 }
 
 func (h *VoiceInterventionHandler) GetStrategy(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid strategy id")
 		return
 	}
-	strategy, err := voiceService.GetStrategy(ctx, id)
+	strategy, err := h.voiceService.GetStrategy(ctx, id)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -332,7 +319,6 @@ func (h *VoiceInterventionHandler) GetStrategy(ctx context.Context, c *app.Reque
 }
 
 func (h *VoiceInterventionHandler) CreateStrategy(ctx context.Context, c *app.RequestContext) {
-	initService()
 	var strategy model.VoiceInterventionStrategy
 	if err := c.BindAndValidate(&strategy); err != nil {
 		response.BadRequest(c, err.Error())
@@ -340,7 +326,7 @@ func (h *VoiceInterventionHandler) CreateStrategy(ctx context.Context, c *app.Re
 	}
 	userID, _ := c.Get("user_id")
 	strategy.CreatedBy = toInt64(userID)
-	err := voiceService.CreateStrategy(ctx, &strategy)
+	err := h.voiceService.CreateStrategy(ctx, &strategy)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -349,7 +335,6 @@ func (h *VoiceInterventionHandler) CreateStrategy(ctx context.Context, c *app.Re
 }
 
 func (h *VoiceInterventionHandler) UpdateStrategy(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid strategy id")
@@ -424,7 +409,7 @@ func (h *VoiceInterventionHandler) UpdateStrategy(ctx context.Context, c *app.Re
 		updates["description"] = req.Description
 	}
 	updates["updated_at"] = time.Now()
-	err = voiceService.UpdateStrategy(ctx, id, updates)
+	err = h.voiceService.UpdateStrategy(ctx, id, updates)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -433,13 +418,12 @@ func (h *VoiceInterventionHandler) UpdateStrategy(ctx context.Context, c *app.Re
 }
 
 func (h *VoiceInterventionHandler) DeleteStrategy(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid strategy id")
 		return
 	}
-	err = voiceService.DeleteStrategy(ctx, id)
+	err = h.voiceService.DeleteStrategy(ctx, id)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -452,7 +436,6 @@ func (h *VoiceInterventionHandler) DeleteStrategy(ctx context.Context, c *app.Re
 // ============================================================
 
 func (h *VoiceInterventionHandler) ListLogs(ctx context.Context, c *app.RequestContext) {
-	initService()
 	vehicleID, _ := strconv.ParseInt(string(c.Query("vehicle_id")), 10, 64)
 	driverID, _ := strconv.ParseInt(string(c.Query("driver_id")), 10, 64)
 	alarmID, _ := strconv.ParseInt(string(c.Query("alarm_id")), 10, 64)
@@ -472,7 +455,7 @@ func (h *VoiceInterventionHandler) ListLogs(ctx context.Context, c *app.RequestC
 	if e := string(c.Query("end_time")); e != "" {
 		endTime, _ = time.Parse(time.RFC3339, e)
 	}
-	logs, total, err := voiceService.ListLogs(ctx, vehicleID, driverID, alarmID, status, startTime, endTime, page, pageSize)
+	logs, total, err := h.voiceService.ListLogs(ctx, vehicleID, driverID, alarmID, status, startTime, endTime, page, pageSize)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -481,7 +464,6 @@ func (h *VoiceInterventionHandler) ListLogs(ctx context.Context, c *app.RequestC
 }
 
 func (h *VoiceInterventionHandler) UpdateLogStatus(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid log id")
@@ -496,7 +478,7 @@ func (h *VoiceInterventionHandler) UpdateLogStatus(ctx context.Context, c *app.R
 		response.BadRequest(c, err.Error())
 		return
 	}
-	err = voiceService.UpdateLogPlayStatus(ctx, id, req.Status, req.ErrorMsg, req.DurationMs)
+	err = h.voiceService.UpdateLogPlayStatus(ctx, id, req.Status, req.ErrorMsg, req.DurationMs)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -505,13 +487,12 @@ func (h *VoiceInterventionHandler) UpdateLogStatus(ctx context.Context, c *app.R
 }
 
 func (h *VoiceInterventionHandler) DriverAckLog(ctx context.Context, c *app.RequestContext) {
-	initService()
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid log id")
 		return
 	}
-	err = voiceService.DriverAckLog(ctx, id)
+	err = h.voiceService.DriverAckLog(ctx, id)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -524,7 +505,6 @@ func (h *VoiceInterventionHandler) DriverAckLog(ctx context.Context, c *app.Requ
 // ============================================================
 
 func (h *VoiceInterventionHandler) TestPlay(ctx context.Context, c *app.RequestContext) {
-	initService()
 	var req model.AudioTestPlayRequest
 	if err := c.BindAndValidate(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -534,7 +514,7 @@ func (h *VoiceInterventionHandler) TestPlay(ctx context.Context, c *app.RequestC
 		req.Volume = 80
 	}
 	userID, _ := c.Get("user_id")
-	log, err := voiceService.TestPlayAudio(ctx, int(req.VehicleID), int(req.AudioID), req.Volume, int(toInt64(userID)))
+	log, err := h.voiceService.TestPlayAudio(ctx, int(req.VehicleID), int(req.AudioID), req.Volume, int(toInt64(userID)))
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -543,7 +523,6 @@ func (h *VoiceInterventionHandler) TestPlay(ctx context.Context, c *app.RequestC
 }
 
 func (h *VoiceInterventionHandler) MatchStrategy(ctx context.Context, c *app.RequestContext) {
-	initService()
 	var req struct {
 		DriverID          int64   `json:"driver_id" binding:"required"`
 		OrgID             int64   `json:"org_id"`
@@ -556,7 +535,7 @@ func (h *VoiceInterventionHandler) MatchStrategy(ctx context.Context, c *app.Req
 		response.BadRequest(c, err.Error())
 		return
 	}
-	result, err := voiceService.MatchStrategy(ctx, req.DriverID, req.OrgID, req.AlarmLevel, req.AlarmType, req.FatigueScore, req.ContinuousMinutes)
+	result, err := h.voiceService.MatchStrategy(ctx, req.DriverID, req.OrgID, req.AlarmLevel, req.AlarmType, req.FatigueScore, req.ContinuousMinutes)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -565,9 +544,8 @@ func (h *VoiceInterventionHandler) MatchStrategy(ctx context.Context, c *app.Req
 }
 
 func (h *VoiceInterventionHandler) GetStatistics(ctx context.Context, c *app.RequestContext) {
-	initService()
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
-	stats, err := voiceService.GetStatistics(ctx, days)
+	stats, err := h.voiceService.GetStatistics(ctx, days)
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return

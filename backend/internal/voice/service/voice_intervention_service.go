@@ -8,11 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apache/rocketmq-clients/golang/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/dangerous-drive-guard/backend/internal/common/model"
+	"github.com/dangerous-drive-guard/backend/pkg/config"
 	"github.com/dangerous-drive-guard/backend/pkg/database"
 	"github.com/dangerous-drive-guard/backend/pkg/logger"
 	"github.com/dangerous-drive-guard/backend/pkg/mq"
@@ -364,6 +366,7 @@ func (s *VoiceInterventionService) TriggerIntervention(ctx context.Context, alar
 		AudioID:             audio.ID,
 		AudioName:           audio.Name,
 		AudioURL:            audio.AudioURL,
+		AudioFormat:         audio.AudioFormat,
 		Category:            audio.Category,
 		StrategyType:        strategy.StrategyType,
 		PlayStatus:          model.InterventionStatusPending,
@@ -411,24 +414,22 @@ func (s *VoiceInterventionService) TriggerIntervention(ctx context.Context, alar
 func (s *VoiceInterventionService) dispatchToVehicle(ctx context.Context, log *model.VoiceInterventionLog, strategy *model.VoiceInterventionStrategy) (string, error) {
 	msgID := uuid.New().String()
 	body, _ := json.Marshal(map[string]interface{}{
-		"msg_id":               msgID,
-		"intervention_log_id":  log.ID,
-		"vehicle_id":           log.VehicleID,
-		"driver_id":            log.DriverID,
-		"alarm_id":             log.AlarmID,
-		"alarm_level":          log.AlarmLevel,
-		"alarm_type":           log.AlarmType,
-		"fatigue_score":        log.FatigueScore,
-		"continuous_minutes":   log.ContinuousMinutes,
-		"audio_url":            log.AudioURL,
-		"audio_name":           log.AudioName,
-		"category":             log.Category,
-		"force_high_volume":    log.IsHighVolume,
-		"volume_percent":       log.ActualVolumePercent,
-		"play_times":           strategy.PlayTimes,
-		"play_interval_sec":    strategy.PlayIntervalSec,
-		"strategy_type":        strategy.StrategyType,
-		"triggered_at":         time.Now(),
+		"log_id":              log.ID,
+		"strategy_id":         strategy.ID,
+		"audio_id":            log.AudioID,
+		"audio_url":           log.AudioURL,
+		"audio_name":          log.AudioName,
+		"audio_format":        log.AudioFormat,
+		"volume_percent":      log.ActualVolumePercent,
+		"force_high_volume":   log.IsHighVolume,
+		"play_times":          strategy.PlayTimes,
+		"play_interval_sec":   strategy.PlayIntervalSec,
+		"vehicle_id":          log.VehicleID,
+		"driver_id":           log.DriverID,
+		"alarm_id":            log.AlarmID,
+		"strategy_type":       strategy.StrategyType,
+		"alarm_level":         log.AlarmLevel,
+		"continuous_minutes":  log.ContinuousMinutes,
 	})
 	err := mq.Send(ctx, mq.Message{
 		Topic: fmt.Sprintf("vehicle_%d_voice_command", log.VehicleID),
@@ -462,6 +463,7 @@ func (s *VoiceInterventionService) TestPlayAudio(ctx context.Context, vehicleID,
 		AudioID:             audio.ID,
 		AudioName:           audio.Name,
 		AudioURL:            audio.AudioURL,
+		AudioFormat:         audio.AudioFormat,
 		Category:            audio.Category,
 		StrategyType:        model.StrategyTypeNormal,
 		PlayStatus:          model.InterventionStatusPending,
@@ -538,4 +540,66 @@ func (s *VoiceInterventionService) GetStatistics(ctx context.Context, days int) 
 		stats.DriverAckRate = "0%"
 	}
 	return stats, nil
+}
+
+// ============================================================
+// 播放结果回传 MQ Consumer
+// ============================================================
+
+type VoicePlayResult struct {
+	LogID        int64  `json:"log_id"`
+	VehicleID    int64  `json:"vehicle_id"`
+	DriverID     int64  `json:"driver_id"`
+	Status       string `json:"status"`
+	ActualVolume int    `json:"actual_volume"`
+	PlayTimes    int    `json:"play_times"`
+	ErrorMsg     string `json:"error_msg,omitempty"`
+	PlayedAt     int64  `json:"played_at"`
+	DurationMs   int64  `json:"duration_ms,omitempty"`
+}
+
+func (s *VoiceInterventionService) StartResultConsumer(ctx context.Context) error {
+	handler := func(ctx context.Context, msg *golang.MessageView) error {
+		var result VoicePlayResult
+		if err := json.Unmarshal(msg.GetBody(), &result); err != nil {
+			logger.Sugar.Errorf("[VoiceResult] 解析播放结果失败: %v", err)
+			return err
+		}
+
+		logger.Sugar.Infof("[VoiceResult] 收到播放结果: log_id=%d, vehicle=%d, status=%s, volume=%d%%, times=%d",
+			result.LogID, result.VehicleID, result.Status, result.ActualVolume, result.PlayTimes)
+
+		updateFields := map[string]interface{}{
+			"play_status":           result.Status,
+			"actual_volume_percent": result.ActualVolume,
+			"play_times":            result.PlayTimes,
+			"updated_at":            time.Now(),
+		}
+		if result.DurationMs > 0 {
+			updateFields["total_play_duration_ms"] = result.DurationMs
+		}
+		if result.Status == "completed" {
+			updateFields["completed_at"] = time.Now()
+		}
+		if result.ErrorMsg != "" {
+			updateFields["error_msg"] = result.ErrorMsg
+		}
+
+		if err := s.db.WithContext(ctx).Model(&model.VoiceInterventionLog{}).
+			Where("id = ?", result.LogID).
+			Updates(updateFields).Error; err != nil {
+			logger.Sugar.Errorf("[VoiceResult] 更新干预日志失败: log_id=%d, err=%v", result.LogID, err)
+			return err
+		}
+
+		logger.Sugar.Debugf("[VoiceResult] 干预日志已更新: log_id=%d, status=%s", result.LogID, result.Status)
+		return nil
+	}
+
+	if err := mq.StartConsumer(&config.Global.RocketMQ, "voice_intervention_result", handler, 4); err != nil {
+		return fmt.Errorf("start voice result consumer: %w", err)
+	}
+
+	logger.Sugar.Infof("[VoiceResult] 播放结果回传 Consumer 已启动，主题: voice_intervention_result")
+	return nil
 }
